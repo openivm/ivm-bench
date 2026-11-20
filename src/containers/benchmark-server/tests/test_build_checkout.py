@@ -13,10 +13,67 @@ from unittest.mock import patch
 BENCHMARK_SERVER = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(BENCHMARK_SERVER))
 
+from models.config import BenchmarkConfig
 from services.docker_manager import DockerManager
+from services.orchestrator import Orchestrator, _spark_builder_source_hash
 
 
 class BuildCheckoutTest(unittest.TestCase):
+    def test_spark_builder_cache_key_handles_optional_patch(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            dockerfile = root / "Dockerfile"
+            patches = root / "patches"
+            patch_file = patches / "compiler.patch"
+            dockerfile.write_text("FROM scratch\n")
+            toolchain_id = "sha256:compiler"
+            no_patch = _spark_builder_source_hash(str(dockerfile), toolchain_id)
+            self.assertNotEqual(no_patch, _spark_builder_source_hash(str(dockerfile), "sha256:updated"))
+            patches.mkdir()
+            patch_file.write_text("first revision\n")
+            first = _spark_builder_source_hash(str(dockerfile), toolchain_id)
+            self.assertNotEqual(no_patch, first)
+            patch_file.write_text("second revision\n")
+            self.assertNotEqual(first, _spark_builder_source_hash(str(dockerfile), toolchain_id))
+            patch_file.write_text("first revision\n")
+            self.assertEqual(first, _spark_builder_source_hash(str(dockerfile), toolchain_id))
+            dockerfile.write_text("FROM busybox\n")
+            self.assertNotEqual(first, _spark_builder_source_hash(str(dockerfile), toolchain_id))
+
+    def test_openivm_toolchain_is_built_only_when_the_image_is_missing(self):
+        existing = subprocess.CompletedProcess([], 0, "sha256:compiler\n", "")
+        missing = subprocess.CompletedProcess([], 1, "", "No such image")
+        orchestrator = Orchestrator(BenchmarkConfig())
+        with patch("services.orchestrator.DockerManager") as manager, patch(
+            "services.orchestrator.subprocess.run", side_effect=[missing, existing, existing]
+        ):
+            self.assertEqual(orchestrator._openivm_toolchain_id(), "sha256:compiler")
+            self.assertEqual(orchestrator._openivm_toolchain_id(), "sha256:compiler")
+        manager.return_value.build.assert_called_once_with(services=["duckdb-openivm-toolchain"])
+
+    def test_published_port_accepts_ipv4_and_ipv6_bindings(self):
+        manager = DockerManager("docker-compose.yml")
+        with patch.object(
+            manager,
+            "_run",
+            return_value=subprocess.CompletedProcess(
+                [], 0, "0.0.0.0:32768\n[::]:32768\n", ""
+            ),
+        ) as run:
+            self.assertEqual(manager.published_port("dbt-server", 5000), 32768)
+        run.assert_called_once_with(["port", "dbt-server", "5000"])
+
+    def test_published_port_rejects_missing_or_ambiguous_mappings(self):
+        manager = DockerManager("docker-compose.yml")
+        for output in ("", "0.0.0.0:0\n", "0.0.0.0:32768\n[::]:32769\n"):
+            with self.subTest(output=output), patch.object(
+                manager,
+                "_run",
+                return_value=subprocess.CompletedProcess([], 0, output, ""),
+            ):
+                with self.assertRaises(RuntimeError):
+                    manager.published_port("dbt-server", 5000)
+
     def test_run_scoped_compose_overlay(self):
         run_id = "a" * 32
         config = {"services": {"builder": {"build": {"context": "."}}, "worker": {"image": "example"}},
@@ -40,7 +97,7 @@ class BuildCheckoutTest(unittest.TestCase):
         with self.assertRaises(ValueError):
             DockerManager("docker-compose.yml", env={"IVM_BENCH_RUN_ID": "invalid"})
 
-    def test_interrupted_server_cleans_only_run_resources(self):
+    def test_interrupted_server_cleans_only_run_resources_and_preserves_injected_relay_url(self):
         source_root = BENCHMARK_SERVER.parents[2]
         with tempfile.TemporaryDirectory() as tmp:
             tmp = Path(tmp)
@@ -50,9 +107,11 @@ class BuildCheckoutTest(unittest.TestCase):
             shutil.copyfile(source_root / "src/.scripts/benchmark.sh", root / "src/.scripts/benchmark.sh")
             shutil.copyfile(source_root / "tools/scripts/cleanup-benchmark-run.sh", root / "tools/scripts/cleanup-benchmark-run.sh")
             (root / "experiments.json").write_text("{}")
+            (root / ".env").write_text("IMDS_RELAY_TEMPORARY_SAS_URL='stale-sender-url'\n")
             docker = tmp / "docker"
             docker.write_text("""#!/bin/bash
 echo "$*" >> "$CALLS"
+printf '%s' "$IMDS_RELAY_TEMPORARY_SAS_URL" > "$RELAY_VALUE"
 case "$*" in
   "ps -aq --filter label=org.ivm-bench.run-id=$IVM_BENCH_RUN_ID") echo owned-container ;;
   "network ls -q --filter label=org.ivm-bench.run-id=$IVM_BENCH_RUN_ID") echo owned-network ;;
@@ -74,6 +133,8 @@ fi
             env = {**os.environ, "PATH": f"{tmp}:{os.environ['PATH']}",
                    "GITHUB_ACTIONS": "false",
                    "CALLS": str(tmp / "calls"), "STREAMING": str(tmp / "streaming"),
+                   "RELAY_VALUE": str(tmp / "relay_value"),
+                   "IMDS_RELAY_TEMPORARY_SAS_URL": "injected-sender-url",
                    "REPO_ROOT": str(root),
                    "GITHUB_ENV": str(tmp / "github_env"), "OPENIVM_UBUNTU_MIRROR": "unused",
                    "BENCHMARK_EXPERIMENTS_FILE": str(root / "experiments.json")}
@@ -84,6 +145,7 @@ fi
                 while not (tmp / "streaming").exists() and process.poll() is None and time.monotonic() < deadline:
                     time.sleep(0.05)
                 self.assertTrue((tmp / "streaming").exists(), "benchmark did not reach streaming")
+                self.assertEqual((tmp / "relay_value").read_text(), "injected-sender-url")
                 process.send_signal(signal.SIGTERM)
                 _, stderr = process.communicate(timeout=10)
                 self.assertEqual(process.returncode, 143)
@@ -149,6 +211,21 @@ fi
         self.assertIn("fatal: reference is not a tree: pinned-sha", message)
         self.assertIn("returned a non-zero code: 128", message)
         self.assertLess(len(message), 8500)
+
+    def test_compose_build_timeout_retains_output_tails(self):
+        error = subprocess.TimeoutExpired(
+            "docker compose build", 3600,
+            output=b"build chatter\n" * 1000 + b"Step 5: installing GCC",
+            stderr=b"warning\n" * 1000 + b"503 Service Unavailable\xff",
+        )
+        manager = DockerManager("docker-compose.yml", "build")
+        with patch("services.docker_manager.subprocess.run", side_effect=error):
+            with self.assertRaises(subprocess.TimeoutExpired) as caught:
+                manager.build()
+        notes = "\n".join(caught.exception.__notes__)
+        self.assertIn("Step 5: installing GCC", notes)
+        self.assertIn("503 Service Unavailable", notes)
+        self.assertLess(len(notes), 8200)
 
 
 if __name__ == "__main__":

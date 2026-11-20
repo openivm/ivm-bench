@@ -60,6 +60,9 @@ export SPARK_EXECUTOR_MEMORY="$(calc_ram "$EXECUTOR_PCT_RAM" "$TOTAL_RAM_GB")g"
 export SPARK_EXECUTOR_CORES=$(calc_cores_clamped "$EXECUTOR_PCT_CORES" "$TOTAL_CORES" "$MIN_CORES")
 export SPARK_SUBMIT_SHUFFLE_PARTITIONS=$SHUFFLE_PARTITIONS
 export SPARK_SUBMIT_DEFAULT_PARALLELISM=$DEFAULT_PARALLELISM
+export OPENIVM_RUNNING_WINDOWS="${OPENIVM_RUNNING_WINDOWS:-false}"
+export OPENIVM_GROUPED_WINDOWS="${OPENIVM_GROUPED_WINDOWS:-false}"
+export OPENIVM_COMPILE_CACHE="${OPENIVM_COMPILE_CACHE:-false}"
 
 # Translate OPENIVM_PROFILE_REFRESH (`0`/`1` or unset) into the boolean
 # token the spark-defaults template expects. Default OFF when unset.
@@ -117,7 +120,7 @@ echo "━━━━━━━━━━━━━━━━━━━━━━━━�
 # Validate openivm-spark runtime artifacts are bind-mounted at /opt/spark-openivm
 # ---------------------------------------------------------------------------
 SPARK_OPENIVM_DIR=/opt/spark-openivm
-for artifact in openivm-extension.jar openivm.duckdb_extension duckdb; do
+for artifact in openivm-extension.jar openivm.duckdb_extension duckdb libstdc++.so.6 libgcc_s.so.1; do
   if [[ ! -f "${SPARK_OPENIVM_DIR}/${artifact}" ]]; then
     echo "FATAL: missing required artifact ${SPARK_OPENIVM_DIR}/${artifact}" >&2
     echo "       (built by spark-openivm-build; bind-mount mount/bin/spark-openivm/)" >&2
@@ -142,6 +145,10 @@ echo "  linked /opt/spark/jars/openivm-extension.jar -> ${SPARK_OPENIVM_DIR}/ope
 mkdir -p /opt/openivm
 ln -sfn "${SPARK_OPENIVM_DIR}/openivm.duckdb_extension" /opt/openivm/openivm.duckdb_extension
 ln -sfn "${SPARK_OPENIVM_DIR}/duckdb" /opt/openivm/duckdb
+ln -sfn "${SPARK_OPENIVM_DIR}/libstdc++.so.6" /opt/openivm/libstdc++.so.6
+ln -sfn "${SPARK_OPENIVM_DIR}/libgcc_s.so.1" /opt/openivm/libgcc_s.so.1
+LD_LIBRARY_PATH="/opt/openivm${LD_LIBRARY_PATH:+:${LD_LIBRARY_PATH}}" \
+  /opt/openivm/duckdb -unsigned -c "LOAD '/opt/openivm/openivm.duckdb_extension'; SELECT 42;" >/dev/null
 echo "  linked /opt/openivm/ -> ${SPARK_OPENIVM_DIR}/ (compiler defaults)"
 
 # ---------------------------------------------------------------------------

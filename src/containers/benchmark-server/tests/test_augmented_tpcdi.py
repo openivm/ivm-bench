@@ -2,6 +2,7 @@ import json
 import re
 import sqlite3
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -11,6 +12,8 @@ REPO = BENCHMARK_SERVER.parents[2]
 sys.path.insert(0, str(BENCHMARK_SERVER))
 
 from models.experiments import parse_experiments_json  # noqa: E402
+from services.engine_runner import _preserve_duckdb_openivm_sql  # noqa: E402
+from services.oat_runner import disk_cleanup_after_experiment  # noqa: E402
 
 
 def action_type_expressions(engine):
@@ -47,6 +50,60 @@ def normalized_sql(sql):
 
 
 class AugmentedTpcdiTest(unittest.TestCase):
+    def test_sql_capture_survives_engine_output_cleanup(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / "mount/results/100/duckdb-openivm/compiled-sql"
+            source.mkdir(parents=True)
+            (source / "view.sql").write_text("SELECT 1", encoding="utf-8")
+            archive = [f"compiled-sql/openivm_compiled_{table}-batch2.csv"
+                       for table in ("programs", "statements")]
+            for path in archive:
+                (source / Path(path).name).write_text("full SQL", encoding="utf-8")
+            preserved = _preserve_duckdb_openivm_sql(directory, 100, 2, archive)
+            self.assertEqual(preserved, "mount/results/100/dbt-server/compiled-sql/batch2")
+            target = root / "mount/results/100/dbt-server/compiled-sql/batch2"
+            for name in ["view.sql"] + [Path(path).name for path in archive]:
+                self.assertEqual((target / name).read_text(encoding="utf-8"),
+                                 "SELECT 1" if name.endswith(".sql") else "full SQL")
+            disk_cleanup_after_experiment(directory, 100, ["duckdb-openivm"], emit=lambda _: None)
+            self.assertFalse(source.exists())
+            self.assertEqual((target / "view.sql").read_text(encoding="utf-8"), "SELECT 1")
+
+    def test_duckdb_sql_capture_is_opt_in_and_preserves_figure_one_inputs(self):
+        config = (BENCHMARK_SERVER / "experiments" /
+                  "duckdb-openivm-sf100-sql-capture.json")
+        (experiment,) = parse_experiments_json(config.read_text(encoding="utf-8"))
+        self.assertEqual(experiment.engines, ["duckdb-openivm"])
+        self.assertEqual((experiment.scale_factor, experiment.batch_1_pct,
+                          experiment.batch_2_pct, experiment.batch_3_pct),
+                         (100, "100", "1", "0.01"))
+        self.assertEqual(experiment.to_compose_env()["OPENIVM_CAPTURE_SQL"], "1")
+        self.assertFalse(experiment.feature_flags.openivm_validate)
+        self.assertEqual(parse_experiments_json('{"experiments":[{}]}')[0]
+                         .to_compose_env()["OPENIVM_CAPTURE_SQL"], "0")
+
+    def test_figure_one_window_settings_are_scoped_to_the_experiment(self):
+        recipe = BENCHMARK_SERVER / "experiments" / "fig1-window-parity-sf100.json"
+        (experiment,) = parse_experiments_json(recipe.read_text(encoding="utf-8"))
+        env = experiment.to_compose_env()
+        self.assertEqual(experiment.engines, ["spark-openivm", "fabric-openivm-jvm-35"])
+        self.assertEqual((experiment.scale_factor, experiment.batch_1_pct,
+                          experiment.batch_2_pct, experiment.batch_3_pct),
+                         (100, "100", "1", "0.01"))
+        self.assertEqual(env["SPARK_DBT_THREADS"], "4")
+        self.assertTrue(experiment.feature_flags.openivm_validate)
+        self.assertEqual(env["OPENIVM_RUNNING_WINDOWS"], "true")
+        self.assertEqual(env["OPENIVM_GROUPED_WINDOWS"], "true")
+        self.assertEqual(env["OPENIVM_COMPILE_CACHE"], "true")
+        self.assertEqual(json.loads(env["FABRIC_SPARK_EXECUTOR_RANGE"]), [4, 9])
+        (default,) = parse_experiments_json('{"experiments":[{}]}')
+        env = default.to_compose_env()
+        self.assertEqual(env["OPENIVM_RUNNING_WINDOWS"], "false")
+        self.assertEqual(env["OPENIVM_GROUPED_WINDOWS"], "false")
+        self.assertEqual(env["OPENIVM_COMPILE_CACHE"], "false")
+        self.assertEqual(env["FABRIC_SPARK_EXECUTOR_RANGE"], "")
+
     def test_databricks_refresh_policy_works_for_standard_tpcdi(self):
         experiment = parse_experiments_json(json.dumps({
             "experiments": [{

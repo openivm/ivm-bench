@@ -91,9 +91,9 @@ The detailed logs of all containers and `dbt` runs will be stored here:
 mount/logs
 ```
 
-### Do not commit without review
+### Commits on working branches
 
-The repo owner reviews all changes before committing. Do not run `git commit` autonomously.
+Commit and push requested changes to the designated working branch without a separate per-commit review. Get explicit owner authorization before pushing to or merging into the default branch.
 
 ### Host environment constraints
 
@@ -122,10 +122,6 @@ All data flows through `mount/` which is gitignored:
 - `mount/benchmark-state/` — Persistent benchmark-server SQLite database
 
 Each benchmark run cleans `mount/` except `mount/benchmark-state/`. See `services/orchestrator.py`.
-
-### Do not commit without review
-
-The repo owner reviews all changes before committing. Do not run `git commit` autonomously.
 
 ### Host environment constraints
 

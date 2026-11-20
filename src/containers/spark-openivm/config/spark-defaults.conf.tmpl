@@ -104,7 +104,9 @@ spark.openivm.delta.enableDeletionVectors=true
 # SCD-2 BETWEEN range join.
 spark.openivm.refresh.semiJoinPrune.enabled=true
 spark.openivm.refresh.scd2RangeAccel.enabled=true
-spark.openivm.refresh.windowRunningIncremental.enabled=false
+spark.openivm.refresh.windowRunningIncremental.enabled=${OPENIVM_RUNNING_WINDOWS}
+spark.openivm.refresh.groupedWindowState.enabled=${OPENIVM_GROUPED_WINDOWS}
+spark.openivm.compile.classificationCache.enabled=${OPENIVM_COMPILE_CACHE}
 spark.openivm.refresh.windowClusterPrune.enabled=false
 
 # Resource allocation (computed from spark-defaults-breakdown.yaml; we

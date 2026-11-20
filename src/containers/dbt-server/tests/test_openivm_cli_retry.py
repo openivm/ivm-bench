@@ -11,6 +11,10 @@ MODULE_PATH = (Path(__file__).resolve().parents[1] / 'adapters/dbt-duckdb-openiv
                'dbt/adapters/openivm/connections.py')
 spec = importlib.util.spec_from_file_location('openivm_cli_connections', MODULE_PATH)
 connections = importlib.util.module_from_spec(spec)
+PROFILE_PATH = Path(__file__).resolve().parents[1] / 'services/openivm_profile.py'
+profile_spec = importlib.util.spec_from_file_location('openivm_profile', PROFILE_PATH)
+profile = importlib.util.module_from_spec(profile_spec)
+profile_spec.loader.exec_module(profile)
 try:
     spec.loader.exec_module(connections)
     HAS_ADAPTER = True
@@ -27,6 +31,7 @@ class OpenIVMCLIRetryTest(unittest.TestCase):
         self.enterContext(patch.object(connections, 'TEMP_DIR', directory))
         self.enterContext(patch.object(connections, 'MAX_RETRIES', 2))
         self.enterContext(patch.object(connections, 'PROFILE_REFRESH', False))
+        self.enterContext(patch.object(connections, 'CAPTURE_SQL', False))
         self.sleep = self.enterContext(patch.object(connections.time, 'sleep'))
 
     @staticmethod
@@ -124,6 +129,33 @@ class OpenIVMCLIRetryTest(unittest.TestCase):
                 self.assertEqual(run.call_count, 1)
         self.sleep.assert_not_called()
 
+    def test_full_sql_capture_enables_archive_and_reference_files(self):
+        def execute(*args, **kwargs):
+            return self.output(kwargs['input'])
+        with tempfile.TemporaryDirectory() as directory, \
+                patch.object(connections, 'WORK_DIR', directory), \
+                patch.object(connections, 'CAPTURE_SQL', True), \
+                patch.object(connections.subprocess, 'run', side_effect=execute) as run:
+            connections._run_cli('SELECT 1')
+            program = run.call_args.kwargs['input']
+            self.assertIn('SET openivm_archive_compiled_sql=true;', program)
+            self.assertIn(f"SET openivm_files_path='{directory}/compiled-sql';", program)
+            self.assertTrue((Path(directory) / 'compiled-sql').is_dir())
+
+
+class OpenIVMCompiledSQLTest(unittest.TestCase):
+    def test_exports_full_compiled_sql_after_each_batch(self):
+        def copy(query, output):
+            output.write_text('view_name,operation,version,stmt_order,sql\n'
+                              'v,refresh,1,0,"SELECT 1"\n', encoding='utf-8')
+        with tempfile.TemporaryDirectory() as directory, \
+                patch.object(profile, 'WORK_DIR', Path(directory)), \
+                patch.object(profile, 'CAPTURE_SQL', True), \
+                patch.object(profile, '_copy_query_to_csv', side_effect=copy) as run:
+            paths = profile._export_compiled_sql(2)
+            self.assertEqual(len(paths), 2)
+            self.assertIn('stmt_order', run.call_args_list[1].args[0])
+            self.assertIn('SELECT 1', (Path(directory) / paths[1]).read_text())
 
 if __name__ == '__main__':
     unittest.main()

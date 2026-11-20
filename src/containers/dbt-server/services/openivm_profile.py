@@ -13,6 +13,7 @@ OPENIVM_BIN = os.environ.get("DUCKDB_OPENIVM_BIN", "/data/bin/duckdb-openivm/duc
 MEM_LIMIT = os.environ.get("DUCKDB_OPENIVM_MEM_LIMIT", "115GB")
 TEMP_DIR = Path(os.environ.get("DUCKDB_OPENIVM_TEMP_DIR", str(WORK_DIR / "_tmp")))
 THREADS = os.environ.get("DUCKDB_OPENIVM_THREADS", "")
+CAPTURE_SQL = os.environ.get("OPENIVM_CAPTURE_SQL", "0") == "1"
 
 
 def _sql_literal(value: str) -> str:
@@ -61,6 +62,23 @@ def _copy_query_to_csv(query: str, output_path: Path) -> None:
         raise RuntimeError(f"OpenIVM profile export failed:\n{proc.stdout[-4000:]}")
 
 
+def _export_compiled_sql(batch_num: int) -> list[str]:
+    if not CAPTURE_SQL:
+        return []
+    output_dir = WORK_DIR / "compiled-sql"
+    output_dir.mkdir(parents=True, exist_ok=True)
+    tables = (
+        ("openivm_compiled_programs", "view_name, operation, version"),
+        ("openivm_compiled_statements", "view_name, operation, version, stmt_order"),
+    )
+    paths = []
+    for table, order in tables:
+        output = output_dir / f"{table}-batch{batch_num}.csv"
+        _copy_query_to_csv(f"SELECT * FROM {table} ORDER BY {order}", output)
+        paths.append(str(output.relative_to(WORK_DIR)))
+    return paths
+
+
 def export_profile(run_id: str, batch_num: int) -> dict:
     """Export OpenIVM profile rows and summaries as CSV strings.
 
@@ -104,12 +122,14 @@ def export_profile(run_id: str, batch_num: int) -> dict:
             cli_timings += cli_path.read_text()
         profile_csv = profile_path.read_text()
         rows = list(csv.DictReader(profile_csv.splitlines()))
+        sql_archive_paths = _export_compiled_sql(batch_num)
         return {
             "status": "ok",
             "run_id": run_id,
             "batch_num": batch_num,
             "row_count": len(rows),
             "view_count": len({row["view_name"] for row in rows if row.get("view_name")}),
+            "sql_archive_paths": sql_archive_paths,
             "csv": {
                 "profile": profile_csv,
                 "cli_timings": cli_timings,

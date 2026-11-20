@@ -59,8 +59,10 @@ class FabricProfileExportTest(unittest.TestCase):
                 self.assertEqual(raw["rows"][0]["sql_text"], "SELECT 1")
                 self.assertTrue((base / f"dbt-server/{engine}-profile-batch2.csv").exists())
 
-    @patch.dict(os.environ, {"OPENIVM_VALIDATE": "1", "OPENIVM_PROFILE_REFRESH": "1", "OPENIVM_QUERY_LOG": "1"})
-    def test_fabric_exports_are_after_batch_timer(self):
+    @patch.dict(os.environ, {"OPENIVM_VALIDATE": "1", "OPENIVM_PROFILE_REFRESH": "1", "OPENIVM_QUERY_LOG": "1",
+                             "EXTENDED_SPARK_PROFILE": "1"})
+    @patch("services.engine_runner.requests.post")
+    def test_fabric_exports_are_after_batch_timer(self, post):
         runner = self.runner("unused")
         for method in ("_persist_batch_result", "_batch_loader_append", "_capture_delta_stats",
                        "_save_openivm_ops_chart", "_capture_storage_metrics",
@@ -73,8 +75,18 @@ class FabricProfileExportTest(unittest.TestCase):
         def export(*_args):
             self.assertEqual(runner._result.batches[1].duration_s, 10.0)
             now[0] += 50.0
+        def history(*args, **_kwargs):
+            export()
+            self.assertEqual(args[0], "http://dbt/metrics/fabric/spark-history/2")
+            return Mock(**{"json.return_value": {"status": "ok"}})
+
+        def validate(*args):
+            post.assert_called_once()
+            export(*args)
+
+        post.side_effect = history
         runner._run_fabric = Mock(side_effect=run_batch)
-        runner._validate_spark_openivm = Mock(side_effect=export)
+        runner._validate_spark_openivm = Mock(side_effect=validate)
         runner._export_spark_openivm_profile = Mock(side_effect=export)
         runner._export_spark_openivm_query_log = Mock(side_effect=export)
         with patch("services.engine_runner.time.time", side_effect=lambda: now[0]):
@@ -84,6 +96,19 @@ class FabricProfileExportTest(unittest.TestCase):
         runner._export_spark_openivm_query_log.assert_called_once_with("run", 2)
         self.assertEqual(runner._result.batches[1].duration_s, 10.0)
         self.assertEqual(runner._result.batches[1].status, "completed")
+        self.assertEqual(runner._result.batches[1].extra["spark_history"]["status"], "ok")
+
+    @patch.dict(os.environ, {"EXTENDED_SPARK_PROFILE": "1"})
+    @patch("services.engine_runner.requests.post")
+    def test_unavailable_fabric_history_is_recorded_without_failing_the_batch(self, post):
+        from requests import Timeout
+
+        runner = self.runner("unused")
+        post.side_effect = Timeout("history timed out")
+        runner._export_fabric_spark_history(2)
+        extra = runner._result.batches[1].extra["spark_history"]
+        self.assertEqual(extra["status"], "unavailable")
+        self.assertEqual(extra["error"], "history timed out")
 
     def test_validation_is_opt_in_at_every_scale(self):
         for engine in ("fabric-openivm-jvm-35", "spark-openivm"):

@@ -35,3 +35,13 @@ execution settings from `SET -v` (broadcast, shuffle, AQE and Delta MERGE
 source materialization). Missing keys mean the runtime did not report them;
 they must not be interpreted as default values. Arbitrary session properties
 and credentials are not saved.
+
+Set `openivm_profile_refresh=2` in the CI dispatch to collect Fabric SQL plans,
+jobs, and stage counters after each timed batch and before correctness
+validation. The snapshots are stored under `mount/stats/<sf>/<engine>/` as
+`fabric-spark-history-batch<N>.jsonl.gz` with matching summaries. Fabric retains
+only a recent portion of Spark history, so check the timestamps against the
+batch's `wall_window_start_ms` and `wall_window_end_ms`. Each file is a snapshot
+of retained history and can include executions seen in earlier files. Batch
+results record the export duration separately. The final snapshot is captured
+before teardown and includes any later validation jobs still retained.

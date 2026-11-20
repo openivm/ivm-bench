@@ -1,0 +1,211 @@
+{
+  "_notes": [
+    "Maps changed paths to the engines GCI must benchmark. See docs/CI_VS_GCI.md.",
+    "First match wins, in this order: no_effect, sql_catalog (rendered per engine and diffed), rules (union of every matching rule), global.",
+    "Any path that matches nothing runs every local engine, as does a selection above full_suite_fraction of the local engines."
+  ],
+  "full_suite_fraction": 0.5,
+  "engines": {
+    "spark": {"kind": "local", "depends_on": ["spark-openivm"]},
+    "spark-openivm": {"kind": "local", "depends_on": ["spark"]},
+    "duckdb": {"kind": "local", "depends_on": ["duckdb-openivm"]},
+    "duckdb-openivm": {"kind": "local", "depends_on": ["duckdb"]},
+    "feldera": {"kind": "local", "depends_on": []},
+    "dbspnet": {"kind": "local", "depends_on": []},
+    "risingwave": {"kind": "local", "depends_on": []},
+    "materialize-emulator": {"kind": "local", "depends_on": []},
+    "databricks-enzyme": {"kind": "cloud", "depends_on": []},
+    "databricks-openivm": {"kind": "cloud", "depends_on": []},
+    "fabric-jvm-35": {"kind": "cloud", "depends_on": []},
+    "fabric-openivm-jvm-35": {"kind": "cloud", "depends_on": []},
+    "sqlite": {"kind": "framework", "depends_on": []}
+  },
+  "no_effect": [
+    "**/*.md",
+    "docs/**",
+    "imgs/**",
+    "LICENSE",
+    "src/containers/sql_catalog/exceptions/*.json"
+  ],
+  "sql_catalog": [
+    "src/containers/sql_catalog/sql/**",
+    "src/containers/sql_catalog/overrides/**",
+    "src/containers/sql_catalog/engines.json",
+    "src/containers/sql_catalog/shared_overrides.json",
+    "src/containers/sql_catalog/skips.json"
+  ],
+  "rules": [
+    {
+      "engines": ["spark"],
+      "paths": [
+        "docker/docker-compose.benchmark.spark.yml",
+        "src/containers/spark/**",
+        "src/containers/dbt-server/dbt-projects/spark/**"
+      ]
+    },
+    {
+      "engines": ["spark", "spark-openivm"],
+      "paths": ["src/containers/benchmark-server/services/spark_metrics.py"]
+    },
+    {
+      "engines": ["spark-openivm", "fabric-openivm-jvm-35", "databricks-openivm"],
+      "paths": [
+        "docker/docker-compose.spark-openivm-build.yml",
+        "src/containers/spark-openivm-build/**"
+      ]
+    },
+    {
+      "engines": ["spark-openivm"],
+      "paths": [
+        "docker/docker-compose.benchmark.spark-openivm.yml",
+        "src/containers/spark-openivm/**",
+        "src/containers/dbt-server/dbt-projects/spark-openivm/**",
+        "src/containers/dbt-server/handlers/spark_openivm.py",
+        "src/containers/dbt-server/services/spark_openivm_*.py",
+        "src/containers/dbt-server/tests/test_spark_openivm_*.py"
+      ]
+    },
+    {
+      "engines": ["duckdb"],
+      "paths": [
+        "docker/docker-compose.benchmark.duckdb.yml",
+        "src/containers/dbt-server/dbt-projects/duckdb/**",
+        "src/containers/dbt-server/services/duckdb_sources.py"
+      ]
+    },
+    {
+      "engines": ["duckdb-openivm"],
+      "paths": [
+        "docker/docker-compose.benchmark.duckdb-openivm.yml",
+        "docker/docker-compose.duckdb-openivm-build.yml",
+        "src/containers/duckdb-openivm/**",
+        "src/containers/dbt-server/dbt-projects/duckdb-openivm/**",
+        "src/containers/dbt-server/adapters/dbt-duckdb-openivm/**",
+        "src/containers/dbt-server/handlers/duckdb_openivm.py",
+        "src/containers/dbt-server/services/duckdb_openivm_sources.py",
+        "src/containers/dbt-server/services/openivm_profile.py",
+        "src/containers/dbt-server/services/openivm_validation.py"
+      ]
+    },
+    {
+      "engines": ["feldera"],
+      "paths": [
+        "docker/docker-compose.benchmark.feldera.yml",
+        "src/containers/dbt-server/dbt-projects/feldera/**",
+        "src/containers/dbt-server/handlers/feldera.py",
+        "src/containers/dbt-server/services/feldera_client.py"
+      ]
+    },
+    {
+      "engines": ["dbspnet"],
+      "paths": [
+        "docker/docker-compose.benchmark.dbspnet.yml",
+        "src/containers/dbspnet/**",
+        "src/containers/dbt-server/dbt-projects/dbspnet/**",
+        "src/containers/dbt-server/handlers/dbspnet.py",
+        "src/containers/dbt-server/services/dbspnet_client.py",
+        "src/containers/dbt-server/services/dbt_to_program.py",
+        "src/containers/dbt-server/tests/test_dbspnet_*.py",
+        "src/containers/dbt-server/tests/test_dbt_to_program.py"
+      ]
+    },
+    {
+      "engines": ["risingwave"],
+      "paths": [
+        "docker/docker-compose.benchmark.risingwave.yml",
+        "src/containers/risingwave/**",
+        "src/containers/dbt-server/dbt-projects/risingwave/**",
+        "src/containers/dbt-server/dbt-projects/.rw_port.py",
+        "src/containers/dbt-server/handlers/risingwave.py",
+        "src/containers/dbt-server/services/risingwave_sources.py",
+        "src/containers/dbt-server/services/compiler_bench/engines_risingwave.py",
+        "src/containers/dbt-server/tests/test_risingwave_*.py",
+        "src/containers/benchmark-server/tests/test_risingwave_*.py"
+      ]
+    },
+    {
+      "engines": ["materialize-emulator"],
+      "paths": [
+        "docker/docker-compose.benchmark.materialize-emulator.yml",
+        "src/containers/dbt-server/dbt-projects/materialize-emulator/**",
+        "src/containers/dbt-server/handlers/materialize_emulator.py",
+        "src/containers/dbt-server/services/materialize_*.py",
+        "src/containers/dbt-server/tests/test_materialize_*.py"
+      ]
+    },
+    {
+      "engines": ["databricks-enzyme", "databricks-openivm"],
+      "paths": [
+        "src/containers/dbt-server/services/compiler_bench/engines_cloud.py",
+        "src/containers/dbt-server/tests/test_databricks_*.py",
+        "src/containers/benchmark-server/tests/test_databricks_*.py"
+      ]
+    },
+    {
+      "engines": ["databricks-enzyme"],
+      "paths": [
+        "docker/docker-compose.benchmark.databricks-enzyme.yml",
+        "src/containers/dbt-server/dbt-projects/databricks-enzyme/**",
+        "src/containers/dbt-server/handlers/databricks_enzyme.py",
+        "src/containers/dbt-server/services/databricks_enzyme_*.py",
+        "src/containers/benchmark-server/services/databricks_enzyme_compute.py"
+      ]
+    },
+    {
+      "engines": ["databricks-openivm"],
+      "paths": [
+        "docker/docker-compose.benchmark.databricks-openivm.yml",
+        "src/containers/openivm-sql-compiler/**",
+        "src/containers/dbt-server/services/databricks_openivm.py"
+      ]
+    },
+    {
+      "engines": ["fabric-jvm-35", "fabric-openivm-jvm-35"],
+      "paths": [
+        "src/containers/imds-router/**",
+        "src/containers/dbt-server/handlers/fabric.py",
+        "src/containers/dbt-server/services/fabric.py",
+        "src/containers/dbt-server/services/fabric_dbt_profile.py",
+        "src/containers/dbt-server/tests/test_fabric_*.py",
+        "src/containers/dbt-server/tests/test_imds_relay_router.py",
+        "src/containers/benchmark-server/tests/test_fabric_*.py"
+      ]
+    },
+    {
+      "engines": ["fabric-jvm-35"],
+      "paths": [
+        "docker/docker-compose.benchmark.fabric-jvm-35.yml",
+        "src/containers/dbt-server/dbt-projects/fabric-jvm-35/**"
+      ]
+    },
+    {
+      "engines": ["fabric-openivm-jvm-35"],
+      "paths": [
+        "docker/docker-compose.benchmark.fabric-openivm-jvm-35.yml",
+        "src/containers/dbt-server/dbt-projects/fabric-openivm-jvm-35/**"
+      ]
+    }
+  ],
+  "global": [
+    ".env.example",
+    ".gitignore",
+    ".github/**",
+    "contrib/**",
+    "docker/docker-compose.base.yml",
+    "docker/docker-compose.batch-loader.yml",
+    "docker/docker-compose.benchmark-server.yml",
+    "docker/docker-compose.datagen.yml",
+    "docker/docker-compose.lpts-build.yml",
+    "src/.scripts/**",
+    "src/containers/benchmark-server/**",
+    "src/containers/dbt-server/**",
+    "src/containers/lpts-build/**",
+    "src/containers/spark-batch-loader/**",
+    "src/containers/spark-digen-delta/**",
+    "src/containers/sql_catalog/*.py",
+    "src/containers/sql_catalog/project_targets.json",
+    "src/containers/tpc-di-gen/**",
+    "src/infra/**",
+    "tools/**"
+  ]
+}

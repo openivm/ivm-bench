@@ -1,0 +1,48 @@
+# Manual cloud CI
+
+Cloud CI is opt-in; GCI still gates PRs using the affected local engines and
+runs every local engine after each merge to `main` (see
+[affected engines](CI_VS_GCI.md#affected-engines)). Cloud engines never run in
+GCI. To reproduce a GCI subset, dispatch CI with the GCI preset and
+`-f experiments_engines=<engine>[,<engine>...]`. In
+[privy hub](http://127.0.0.1:7748/ui/relay-sas), mint an HTTPS sender URL
+with enough TTL for the run (for example, six hours). Paste the full URL at
+the secret prompt, never into command history. A repository admin creates the
+`manual-run` environment once.
+
+```bash
+repo=mdrakiburrahman/ivm-bench
+branch='<branch>'
+gh api --method PUT "repos/$repo/environments/manual-run" --silent # admin, once
+gh secret set IMDS_RELAY_TEMPORARY_SAS_URL --env manual-run --repo "$repo"
+gh workflow run ci.yaml --repo "$repo" --ref "$branch" \
+  -f engines=fabric-jvm-35 -f scale_factor=3 \
+  -f batch_1_pct=1 -f batch_2_pct=0.001 -f batch_3_pct=0.002 \
+  -f timeout_minutes=90
+gh run list --repo "$repo" --workflow ci.yaml --branch "$branch" --event workflow_dispatch --limit 1
+gh run watch <run-id> --repo "$repo" --exit-status
+```
+
+Alternatively, feed the URL file to `gh secret set` via stdin. Renew the secret
+before it expires; the router cannot renew it. Other cloud credentials stay in
+`BASE64_ENV`; the temporary URL is injected separately and takes precedence over
+`.env`. See [CI inputs and experiment presets](CI_VS_GCI.md) for larger runs.
+
+## Benchmark runner pool
+
+CI uses any available Linux x64 self-hosted runner with the `ivm-bench-azure`
+label. Omit `runner` when dispatching CI; individual machines cannot be selected.
+
+Use `schedule=parallel` for parallel engine execution. Experiment files still
+accept the legacy `parallel` setting.
+
+## Build the Spark and Fabric image locally
+
+The benchmark harness reuses the tagged Ubuntu 22.04/GCC 13 toolchain image for
+DuckDB and Spark/Fabric, and builds it on a fresh machine. To build the
+Spark/Fabric image directly with Docker Compose, prepare the same toolchain first.
+
+```bash
+docker compose -f docker/docker-compose.duckdb-openivm-build.yml build duckdb-openivm-toolchain
+docker compose -f docker/docker-compose.spark-openivm-build.yml build
+```

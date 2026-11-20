@@ -1,6 +1,7 @@
-"""GCI runs one fixed local-engine preset; CI runs every engine or what it is asked."""
+"""GCI runs its local-engine preset, narrowed to affected engines on PRs; CI runs what it is asked."""
 
 import os
+import json
 import re
 import subprocess
 import sys
@@ -45,14 +46,28 @@ class ExperimentSelectionTest(unittest.TestCase):
             with self.subTest(event=event):
                 self.assertEqual(self.select(event, "custom.json"), "custom.json")
 
-    def test_merge_to_main_runs_the_all_engine_preset(self):
-        self.assertEqual(self.select("push"), CI_PRESET)
-
     def test_dispatch_without_a_file_uses_the_inline_knobs(self):
         self.assertEqual(self.select("workflow_dispatch"), "")
 
     def test_pull_request_ignores_the_retired_gci_json(self):
         self.assertEqual(self.select("pull_request"), "")
+
+    def test_build_selection_uses_all_resolved_experiments(self):
+        helper = REPO / "tools/scripts/github/experiment-needs-engine.py"
+        for data, expected in (
+            ({"baseline": {"engines": ["duckdb"]}, "experiments": [{}]}, "false"),
+            ({"baseline": {"engines": ["risingwave"]}, "experiments": [{}]}, "true"),
+            ({"baseline": {"engines": ["duckdb"]}, "experiments": [
+                {}, {"engines": ["risingwave"]}
+            ]}, "true"),
+            ({"experiments": [{}]}, "false"),
+        ):
+            with self.subTest(data=data), tempfile.TemporaryDirectory() as directory:
+                path = Path(directory) / "experiments.json"
+                path.write_text(json.dumps(data))
+                result = subprocess.run([sys.executable, str(helper), str(path), "risingwave"],
+                                        check=True, capture_output=True, text=True)
+                self.assertEqual(result.stdout.strip(), expected)
 
 
 class PresetCoverageTest(unittest.TestCase):
@@ -80,11 +95,10 @@ class PresetCoverageTest(unittest.TestCase):
                     self.assertFalse(experiment.feature_flags.compiler_bench)
                     self.assertFalse(experiment.feature_flags.cost_model_bench)
 
-    def test_gci_is_pinned_to_its_preset_with_no_knobs(self):
+    def test_gci_is_pinned_to_its_preset_with_no_dispatch_knobs(self):
         gci = (WORKFLOWS / "gci.yaml").read_text(encoding="utf-8")
         self.assertIn("uses: ./.github/workflows/ci.yaml", gci)
         self.assertIn(f"experiments_file: {GCI_PRESET}", gci)
-        self.assertNotIn("workflow_dispatch", gci)
         self.assertNotIn("inputs.", gci)
 
     def test_ci_inline_default_engines_cover_every_engine(self):
@@ -101,16 +115,82 @@ class PresetCoverageTest(unittest.TestCase):
         self.assertLess(ci.index("src/.scripts/benchmark.sh"), guard)
         self.assertLess(guard, ci.index("post-pr-comment.sh"))
 
-    def test_workflow_triggers_keep_pr_and_post_merge_paths_separate(self):
+    def test_ci_uses_docker_assigned_dbt_server_ports(self):
+        ci = yaml.load((WORKFLOWS / "ci.yaml").read_text(), Loader=yaml.BaseLoader)
+        compose = yaml.load(
+            (REPO / "docker/docker-compose.benchmark-server.yml").read_text(),
+            Loader=yaml.BaseLoader,
+        )
+        self.assertEqual(ci["jobs"]["benchmark"]["env"]["DBT_SERVER_DYNAMIC_PORT"], "1")
+        self.assertEqual(
+            compose["services"]["benchmark-server"]["environment"]["DBT_SERVER_DYNAMIC_PORT"],
+            "${DBT_SERVER_DYNAMIC_PORT:-0}",
+        )
+
+    def test_ci_uses_the_shared_runner_pool(self):
+        ci = yaml.load((WORKFLOWS / "ci.yaml").read_text(), Loader=yaml.BaseLoader)
+        for trigger in ("workflow_dispatch", "workflow_call"):
+            self.assertNotIn("runner", ci["on"][trigger]["inputs"])
+        self.assertEqual(ci["jobs"]["benchmark"]["runs-on"], [
+            "self-hosted", "Linux", "X64", "ivm-bench-azure",
+        ])
+
+    def test_workflow_triggers_keep_pr_main_and_manual_paths_separate(self):
         gci = yaml.load((WORKFLOWS / "gci.yaml").read_text(), Loader=yaml.BaseLoader)
         ci = yaml.load((WORKFLOWS / "ci.yaml").read_text(), Loader=yaml.BaseLoader)
-        self.assertEqual(set(gci["on"]), {"pull_request"})
+        self.assertEqual(set(gci["on"]), {"pull_request", "push", "workflow_dispatch"})
+        self.assertEqual(gci["on"]["push"], {"branches": ["main"]})
+        self.assertEqual(gci["on"]["workflow_dispatch"], "")
         self.assertIn("synchronize", gci["on"]["pull_request"]["types"])
         self.assertIn("ready_for_review", gci["on"]["pull_request"]["types"])
-        self.assertEqual(set(ci["on"]), {"push", "workflow_dispatch", "workflow_call"})
-        self.assertEqual(ci["on"]["push"]["branches"], ["main"])
-        self.assertEqual(len(ci["on"]["workflow_dispatch"]["inputs"]), 25)
-        self.assertEqual(set(gci["jobs"]["benchmark"]["with"]), {"experiments_file", "pr_number"})
+        self.assertEqual(set(ci["on"]), {"workflow_dispatch", "workflow_call"})
+        self.assertLessEqual(len(ci["on"]["workflow_dispatch"]["inputs"]), 25)
+        self.assertIn("experiments_engines", ci["on"]["workflow_call"]["inputs"])
+        gci_inputs = gci["jobs"]["engines"]["with"]
+        self.assertEqual(
+            set(gci_inputs), {"experiments_file", "experiments_engines", "pr_number", "publish_dashboard"}
+        )
+        self.assertEqual(gci_inputs["publish_dashboard"], "${{ needs.changes.outputs.mode == 'full' }}")
+        self.assertIn("mode == 'subset'", gci_inputs["experiments_engines"])
+
+    def test_required_check_is_an_always_running_gate(self):
+        gate = yaml.load((WORKFLOWS / "gci.yaml").read_text(), Loader=yaml.BaseLoader)["jobs"]["gate"]
+        self.assertEqual(gate["name"], "benchmark / benchmark")
+        self.assertEqual(set(gate["needs"]), {"changes", "engines", "checks"})
+        self.assertTrue(gate["if"].startswith("always()"))
+
+    def test_each_main_push_runs_and_publishes_in_its_own_concurrency_group(self):
+        for name in ("gci.yaml", "ci.yaml"):
+            workflow = yaml.load((WORKFLOWS / name).read_text(), Loader=yaml.BaseLoader)
+            with self.subTest(workflow=name):
+                self.assertIn("format('push-{0}', github.run_id)", workflow["concurrency"]["group"])
+        publish = next(
+            step for step in yaml.load((WORKFLOWS / "ci.yaml").read_text(), Loader=yaml.BaseLoader)
+            ["jobs"]["benchmark"]["steps"] if step.get("name") == "Publish dashboard snapshot"
+        )
+        self.assertIn("github.event_name == 'push'", publish["if"])
+
+    def test_dashboard_publisher_records_main_push_provenance(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            subprocess.run(["git", "init", "-q"], cwd=root, check=True)
+            subprocess.run(["git", "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q",
+                            "--allow-empty", "-m", "x"], cwd=root, check=True)
+            sha = subprocess.run(["git", "rev-parse", "HEAD"], cwd=root, check=True,
+                                 capture_output=True, text=True).stdout.strip()
+            (root / "ci-results").mkdir()
+            (root / "ci-results/engine-coverage.json").write_text('{"passed": true}')
+            (root / "bin").mkdir()
+            (root / "bin/curl").write_text('#!/bin/sh\necho "curl $*" >&2\nexit 7\n')
+            (root / "bin/curl").chmod(0o755)
+            result = subprocess.run(
+                ["bash", str(REPO / "tools/dashboard-ci.sh")], cwd=root, text=True, capture_output=True,
+                env={**os.environ, "PATH": f"{root / 'bin'}:{os.environ['PATH']}",
+                     "GITHUB_EVENT_NAME": "push", "GITHUB_SHA": sha, "GITHUB_REF": "refs/heads/main",
+                     "GITHUB_REPOSITORY": "openivm/ivm-bench", "GITHUB_API_URL": "https://api.invalid",
+                     "GH_TOKEN": "token", "RUNNER_TEMP": directory},
+            )
+        self.assertIn(f"/repos/openivm/ivm-bench/commits/{sha}", result.stderr)
 
 
 if __name__ == "__main__":

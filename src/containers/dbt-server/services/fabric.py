@@ -19,6 +19,7 @@ extension + RocksDB state); this module only moves bytes and manages the
 Environment.
 """
 
+import gzip
 import json
 import logging
 import os
@@ -502,6 +503,95 @@ def provision_run(openivm: bool, *, enable_schemas: bool = False) -> dict:
     return {"status": "ok", "resolved": resolved, "swept": swept["deleted"], "publish": publish}
 
 
+def export_spark_history(output: Path = Path("/data/stats/fabric-spark-history.jsonl.gz")) -> dict:
+    """Save executed SQL plans and stage metrics before the run's lakehouse is removed."""
+    output.parent.mkdir(parents=True, exist_ok=True)
+    deadline = time.monotonic() + 420
+    lakehouse = f"{_workspace_base()}/lakehouses/{_compute_lakehouse_id()}/livySessions"
+    headers = _fabric_headers()
+
+    def get(url, **params):
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise TimeoutError("Spark history export deadline reached")
+        response = _fabric_req("GET", url, headers=headers, params=params, timeout=min(60, remaining), retries=1)
+        response.raise_for_status()
+        return response.json()
+
+    counts = {"sessions": 0, "sql": 0, "jobs": 0, "stages": 0}
+    failures = []
+    with gzip.open(output.with_suffix(".tmp"), "wt", encoding="utf-8") as out:
+        def write(kind, application, rows):
+            for row in rows:
+                out.write(json.dumps({"kind": kind, "application": application, "data": row}) + "\n")
+            counts[kind] += len(rows)
+
+        continuation = {}
+        sessions = []
+        try:
+            while True:
+                page = get(lakehouse, **continuation)
+                sessions.extend(page["value"])
+                token = page.get("continuationToken")
+                if not token:
+                    break
+                if token == continuation.get("continuationToken"):
+                    raise ValueError("Repeated Fabric session continuation token")
+                continuation = {"continuationToken": token}
+        except (requests.RequestException, ValueError, KeyError, TimeoutError) as error:
+            failures.append({"kind": "sessions", "error": str(error)})
+
+        # Prefer completed sessions so their metrics include validation and teardown jobs.
+        for session in sorted(sessions, key=lambda x: not x.get("endDateTime")):
+            livy_id, app_id = session.get("livyId"), session.get("sparkApplicationId")
+            if not livy_id or not app_id:
+                continue
+            identity = {
+                k: session[k] for k in ("livyId", "sparkApplicationId", "state", "runtimeVersion",
+                                        "startDateTime", "endDateTime", "attemptNumber",
+                                        "driverMemory", "driverCores", "executorMemory", "executorCores",
+                                        "numExecutors", "queuedDuration", "runningDuration") if k in session
+            }
+            if os.environ.get("FABRIC_SPARK_EXECUTOR_RANGE"):
+                try:
+                    details = get(f"{lakehouse}/{livy_id}")
+                    for key in ("driverMemory", "driverCores", "executorMemory", "executorCores",
+                                "numExecutors", "dynamicAllocationMaxExecutors", "isDynamicAllocationEnabled"):
+                        if key in details:
+                            identity[key] = details[key]
+                except (requests.RequestException, ValueError, TimeoutError) as error:
+                    failures.append({"kind": "session_compute", "application": app_id, "error": str(error)})
+            write("sessions", app_id, [identity])
+            base = f"{lakehouse}/{livy_id}/applications/{app_id}"
+            for kind in ("sql", "stages", "jobs"):
+                try:
+                    if kind == "sql":
+                        offset = 0
+                        seen = set()
+                        while True:
+                            rows = get(f"{base}/sql", details="true", planDescription="true",
+                                       offset=offset, length=100)
+                            ids = {row["id"] for row in rows}
+                            if ids & seen:
+                                raise ValueError("Repeated SQL execution IDs in Fabric history")
+                            write(kind, app_id, rows)
+                            seen.update(ids)
+                            if len(rows) < 100:
+                                break
+                            offset += len(rows)
+                    else:
+                        options = {"withSummaries": "true", "details": "false"} if kind == "stages" else {}
+                        write(kind, app_id, get(f"{base}/{kind}", **options))
+                except (requests.RequestException, ValueError, KeyError, TimeoutError) as error:
+                    failures.append({"kind": kind, "application": app_id, "error": str(error)})
+
+    output.with_suffix(".tmp").replace(output)
+    summary = {"status": "ok" if counts["sql"] and not failures else "partial", "counts": counts, "failures": failures}
+    summary_path = output.with_name(f"{output.name.removesuffix('.jsonl.gz')}-summary.json")
+    summary_path.write_text(json.dumps(summary, indent=2) + "\n")
+    return summary
+
+
 def teardown_run() -> dict:
     """End-of-run: delete this run's compute lakehouse + environment (the shared
     cache lakehouse is preserved). Best-effort; orphan-sweep is the backstop."""
@@ -870,6 +960,9 @@ def default_openivm_spark_properties() -> Dict[str, str]:
         "spark.openivm.refresh.groupedWindowState.enabled": "true",
         "spark.openivm.compile.classificationCache.enabled": "true",
         "spark.openivm.refresh.scd2RangeAccel.enabled": "true",
+        "spark.openivm.refresh.windowRunningIncremental.enabled": os.environ.get("OPENIVM_RUNNING_WINDOWS", "false"),
+        "spark.openivm.refresh.groupedWindowState.enabled": os.environ.get("OPENIVM_GROUPED_WINDOWS", "false"),
+        "spark.openivm.compile.classificationCache.enabled": os.environ.get("OPENIVM_COMPILE_CACHE", "false"),
         "spark.databricks.delta.schema.autoMerge.enabled": "true",
         "spark.openivm.profile.refresh": _b("OPENIVM_PROFILE_REFRESH"),
         "spark.openivm.refresh.adaptiveBroadcast.enabled": _b('OPENIVM_REFRESH_ADAPTIVE_BROADCAST','1'),
@@ -894,6 +987,14 @@ def publish_empty_environment() -> dict:
 
 def _stage_spark_compute(properties: Dict[str, str]) -> None:
     """Use the stable API contract and verify the runtime/config before publish."""
+    executor_range = os.environ.get("FABRIC_SPARK_EXECUTOR_RANGE")
+    allocation = {}
+    if executor_range:
+        limits = json.loads(executor_range)
+        if (not isinstance(limits, list) or len(limits) != 2
+                or any(type(n) is not int for n in limits) or not 1 <= limits[0] <= limits[1]):
+            raise ValueError("FABRIC_SPARK_EXECUTOR_RANGE requires positive [min, max] executor counts")
+        allocation = {"enabled": True, "minExecutors": limits[0], "maxExecutors": limits[1]}
     url = f"{_env_base()}/staging/sparkcompute"
     hdr = {**_fabric_headers(), "Content-Type": "application/json"}
     params = {"beta": "false"}
@@ -904,7 +1005,8 @@ def _stage_spark_compute(properties: Dict[str, str]) -> None:
     patch = _fabric_req(
         "PATCH", url, headers=hdr, params=params,
         json={"runtimeVersion": RUNTIME_VERSION,
-              "sparkProperties": [{"key": key, "value": value} for key, value in properties.items()]},
+              "sparkProperties": [{"key": key, "value": value} for key, value in properties.items()],
+              **({"dynamicExecutorAllocation": allocation} if allocation else {})},
     )
     if patch.status_code not in (200, 202):
         raise RuntimeError(f"sparkcompute PATCH failed: HTTP {patch.status_code} {patch.text[:300]}")
@@ -920,7 +1022,11 @@ def _stage_spark_compute(properties: Dict[str, str]) -> None:
     mismatches = [key for key, value in properties.items() if staged.get(key) != value]
     if mismatches:
         raise RuntimeError(f"Fabric Spark properties not applied: {', '.join(mismatches)}")
-    logger.info("[fabric] verified runtime=%s, Spark properties=%d", RUNTIME_VERSION, len(properties))
+    actual_allocation = compute.get("dynamicExecutorAllocation") or {}
+    if any(actual_allocation.get(key) != value for key, value in allocation.items()):
+        raise RuntimeError(f"Fabric executor allocation pin not applied: expected {allocation}, got {actual_allocation}")
+    logger.info("[fabric] verified runtime=%s, Spark properties=%d, executor allocation=%s",
+                RUNTIME_VERSION, len(properties), actual_allocation)
 
 
 def _staged_library_names(hdr: Dict[str, str]) -> List[str]:

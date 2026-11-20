@@ -7,6 +7,7 @@ import os
 import shutil
 import tempfile
 import time
+import uuid
 from datetime import datetime
 from threading import Barrier, Lock
 from typing import Any, Callable, Dict, List, Optional
@@ -36,6 +37,26 @@ HEALTH_INTERVAL = 5
 _RETRY_DELAYS = [30, 60, 120]
 _COMPILER_BENCH_SUMMARY_LOCK = Lock()
 _FABRIC_CACHE_LOCK = Lock()
+
+
+def _preserve_duckdb_openivm_sql(repo_dir: str, scale_factor: int, batch_num: int,
+                                 archive_paths: List[str]) -> str:
+    source_dir = os.path.join(repo_dir, "mount", "results", str(scale_factor), "duckdb-openivm", "compiled-sql")
+    if not os.path.isdir(source_dir):
+        raise RuntimeError(f"OpenIVM compiled SQL directory missing: {source_dir}")
+    sql_files = [name for name in os.listdir(source_dir) if name.endswith(".sql")]
+    archive_files = [os.path.basename(path) for path in archive_paths]
+    if not sql_files or len(archive_files) != 2:
+        raise RuntimeError(f"OpenIVM compiled SQL capture incomplete after batch {batch_num}")
+    target_dir = os.path.join(repo_dir, "mount", "results", str(scale_factor), "dbt-server", "compiled-sql",
+                              f"batch{batch_num}")
+    os.makedirs(target_dir, exist_ok=True)
+    for name in sql_files + archive_files:
+        source = os.path.join(source_dir, name)
+        if not os.path.isfile(source):
+            raise RuntimeError(f"OpenIVM compiled SQL file missing: {source}")
+        shutil.copy2(source, os.path.join(target_dir, name))
+    return os.path.relpath(target_dir, repo_dir)
 
 
 def _post_with_retry(
@@ -168,7 +189,11 @@ class EngineRunner:
         self._benchmark_id = benchmark_id
         self._storage_barrier = storage_barrier
         docker_host = os.environ.get("DOCKER_HOST_ADDRESS", "localhost")
+        self._docker_host = docker_host
         self._dbt_url = f"http://{docker_host}:{engine_config.port}"
+        self._dynamic_dbt_port = os.environ.get(
+            "DBT_SERVER_DYNAMIC_PORT", ""
+        ).strip().lower() in ("1", "true", "yes", "on")
         self._override_file: Optional[str] = None
         self._batch_override_file: Optional[str] = None
         self._parallel = config.parallel
@@ -183,6 +208,20 @@ class EngineRunner:
         engine_compose = os.path.join(config.repo_dir, engine_config.compose_file)
         engine_env = {**config.base_env(), **engine_config.env_dict()}
         compose_overrides = [os.path.join(config.repo_dir, path) for path in engine_config.compose_overrides]
+        if self._dynamic_dbt_port:
+            engine_env["DBT_SERVER_PORT"] = "0"
+        if engine_config.name == "materialize-emulator":
+            run_instance = uuid.uuid4().hex
+            engine_env["MATERIALIZE_EMULATOR_RUN_ID"] = run_instance
+            self._result.extra["materialize_emulator"] = {
+                "version": "v26.50.0",
+                "image_digest": "sha256:64d54a0853e88bcfbb6ed059347d3653721fb4f8c9b43989bee2cab38fd8258e",
+                "cluster_size": engine_env["MATERIALIZE_EMULATOR_CLUSTER_SIZE"],
+                "cluster_workers": int(engine_env["MATERIALIZE_EMULATOR_WORKERS"]),
+                "container_cpus": engine_config.main_resources.cpus,
+                "container_memory_gb": engine_config.main_resources.memory_gb,
+                "instance": run_instance,
+            }
         if engine_config.name == "databricks-openivm":
             # Enzyme and OpenIVM may run together in one experiment wave.
             engine_env["DATABRICKS_EXPERIMENT_ID"] = str(time.time_ns() // 1000)
@@ -317,6 +356,10 @@ class EngineRunner:
             # staging them would fail on the missing input rather than merely
             # waste time.
             compiler_bench = self._compiler_bench_enabled()
+            if name == "materialize-emulator" and (
+                compiler_bench or self._config.repeated_refresh or self._config.workload != "standard"
+            ):
+                raise ValueError("Materialize Emulator supports only the standard TPC-DI three-batch workload")
             if (
                 self._config.workload != "extended-tpcds"
                 and name not in ("duckdb", "duckdb-openivm")
@@ -329,10 +372,23 @@ class EngineRunner:
             self._emit(f"[{name}] Building and starting compose stack")
             self._engine_mgr.build()
             self._up_with_retry()
+            self._resolve_dbt_server_port()
 
             # Wait for dbt-server health
             self._emit(f"[{name}] Waiting for dbt-server health")
             self._wait_for_dbt_health()
+
+            if name == "materialize-emulator":
+                response = requests.post(f"{self._dbt_url}/status/{name}", timeout=30)
+                response.raise_for_status()
+                replica = response.json()
+                expected_workers = self._result.extra["materialize_emulator"]["cluster_workers"]
+                actual_workers = replica["processes"] * replica["workers"]
+                if actual_workers != expected_workers:
+                    raise RuntimeError(
+                        f"Materialize replica has {actual_workers} workers, expected {expected_workers}"
+                    )
+                self._result.extra["materialize_emulator"]["actual_replica"] = replica
 
             # Start container stats
             self._start_stats()
@@ -399,8 +455,9 @@ class EngineRunner:
                 ("capture_logs", self._capture_logs),
                 ("extended_tpcds_cleanup", self._cleanup_extended_tpcds),
                 ("databricks_enzyme_drop_mvs", self._databricks_enzyme_drop_mvs),
+                ("fabric_spark_history", self._export_fabric_spark_history),
                 ("fabric_cleanup", self._fabric_cleanup),
-                ("engine_mgr.down", self._engine_mgr.down),
+                ("engine_mgr.down", lambda: self._engine_mgr.down(volumes=name == "materialize-emulator")),
                 ("cleanup_staging", self._cleanup_staging),
             ):
                 try:
@@ -626,6 +683,26 @@ class EngineRunner:
         except Exception as e:
             self._emit(f"[databricks-enzyme] Post-run cleanup-schema WARN: {e}")
 
+    def _export_fabric_spark_history(self, batch_num: int | None = None) -> None:
+        if self._engine.name not in ("fabric-openivm-jvm-35", "fabric-jvm-35"):
+            return
+        if os.environ.get("EXTENDED_SPARK_PROFILE") != "1":
+            return
+        endpoint = f"{self._dbt_url}/metrics/fabric/spark-history"
+        extra = self._result.extra
+        if batch_num is not None:
+            endpoint += f"/{batch_num}"
+            extra = self._result.batches[batch_num - 1].extra
+        start = time.monotonic()
+        try:
+            response = requests.post(endpoint, timeout=600)
+            response.raise_for_status()
+            summary = response.json()
+        except (requests.RequestException, ValueError) as exc:
+            summary = {"status": "unavailable", "error": str(exc)}
+        extra["spark_history"] = {**summary, "export_wall_s": time.monotonic() - start}
+        self._emit(f"[{self._engine.name}] Spark history export: {summary}")
+
     def _fabric_cleanup(self) -> None:
         """End-of-run: tear down this run's compute lakehouse + environment so no
         experiment leaves stale resources behind (the shared cache lakehouse is
@@ -821,6 +898,10 @@ class EngineRunner:
         self._emit(f"[{name}] Batch {batch_num} starting")
         self._persist_batch_result(batch_num, batch)
 
+        extended_profile = os.environ.get("EXTENDED_SPARK_PROFILE") == "1"
+        if extended_profile:
+            batch.extra["profile_window_start_ms"] = int(time.time() * 1000)
+
         try:
             # Append data for batches 2/3. DuckDB and DuckDB-OpenIVM manage
             # DuckLake source appends inside their measured batch path; Feldera
@@ -828,7 +909,9 @@ class EngineRunner:
             # spark-openivm DOES use the batch-loader (so mount/raw/<SF>/delta/batchN
             # gets populated with the correct CDC shape), then _run_spark_openivm
             # additionally fires INSERT INTO via Livy AFTER the timer starts.
-            if batch_num > 1 and name not in ("duckdb", "duckdb-openivm") and not (name == "feldera" and batch_num > 1):
+            # RisingWave, like the DuckDB engines, appends its own sources
+            # inside the measured batch path (_run_risingwave).
+            if batch_num > 1 and name not in ("duckdb", "duckdb-openivm", "risingwave") and not (name == "feldera" and batch_num > 1):
                 self._batch_loader_append(batch_num)
                 self._capture_delta_stats(batch_num)
 
@@ -857,10 +940,14 @@ class EngineRunner:
                     self._run_dbspnet_wait(batch_num)
             elif name == "duckdb":
                 self._run_duckdb_ducklake(batch_num)
+            elif name == "risingwave":
+                run_id = self._run_risingwave(batch_num)
             elif name == "duckdb-openivm":
                 run_id = self._run_duckdb_openivm(batch_num)
             elif name == "spark-openivm":
                 run_id = self._run_spark_openivm(batch_num)
+            elif name == "materialize-emulator":
+                run_id = self._run_materialize_emulator(batch_num)
             elif name == "databricks-enzyme":
                 run_id = self._run_databricks_enzyme(batch_num)
             elif name == "databricks-openivm":
@@ -888,7 +975,17 @@ class EngineRunner:
             if not is_cloud_engine(name) and name != "feldera":
                 self._finish_cpu_measurement(batch_num)
 
+            if name == "materialize-emulator" and run_id:
+                self._save_run_result(run_id, batch_num)
+            if name == "materialize-emulator":
+                response = requests.post(f"{self._dbt_url}/validate/materialize-emulator", timeout=7260)
+                response.raise_for_status()
+                batch.extra["correctness_validation"] = response.json()
+
             if run_id and batch.status != "failed":
+                # Fabric's retained Spark history rolls forward. Validation adds
+                # enough SQL and stages to displace the timed refreshes.
+                self._export_fabric_spark_history(batch_num)
                 if name == "duckdb-openivm":
                     if os.environ.get("OPENIVM_VALIDATE", "0") != "0":
                         self._validate_duckdb_openivm(run_id, batch_num)
@@ -949,6 +1046,8 @@ class EngineRunner:
             raise
         finally:
             self._ensure_cpu_measurement_status(batch_num)
+            if extended_profile:
+                batch.extra["profile_window_end_ms"] = int(time.time() * 1000)
             # Always persist batch result to benchmark-server DB
             self._persist_batch_result(batch_num, batch)
 
@@ -1079,6 +1178,72 @@ class EngineRunner:
             )
 
         self._run_dbt(batch_num)
+
+    def _run_risingwave(self, batch_num: int) -> Optional[str]:
+        """RisingWave: build the MV graph once, then only feed it.
+
+        Batch 1 loads the source tables and runs dbt, which creates one
+        MATERIALIZED VIEW per model. Batches 2 and 3 append to those source
+        tables and wait — there is no dbt run and no REFRESH, because every model
+        is a streaming dataflow that maintains itself. FLUSH returns once the
+        appended rows are visible downstream, which is what makes the batch
+        duration comparable with the other engines' refresh time.
+        """
+        if batch_num == 1:
+            self._emit("[risingwave] Loading source tables")
+            resp = requests.post(f"{self._dbt_url}/sources/risingwave/init", timeout=14400)
+            resp.raise_for_status()
+            src_result = resp.json()
+            self._emit(
+                f"[risingwave] Sources loaded: "
+                f"{src_result.get('tables_created', '?')} tables"
+            )
+            for metric in src_result.get("load_metrics") or []:
+                self._emit(
+                    f"[risingwave] Source load {metric.get('table', '?')}: "
+                    f"{metric.get('rows', '?')} rows via {metric.get('mode', '?')} "
+                    f"in {metric.get('duration_s', '?')}s"
+                )
+            return self._run_dbt(batch_num)
+
+        self._emit(f"[risingwave] Appending batch {batch_num} sources")
+        # A lost response can follow a partial or complete non-idempotent
+        # append. Fail the run instead of replaying mutations and inserts.
+        resp = requests.post(
+            f"{self._dbt_url}/sources/risingwave/append/{batch_num}", timeout=14400,
+        )
+        resp.raise_for_status()
+        src_result = resp.json()
+        self._emit(
+            f"[risingwave] Batch {batch_num} appended: "
+            f"{src_result.get('tables_appended', '?')} tables; waiting for propagation"
+        )
+        resp = requests.post(f"{self._dbt_url}/sources/risingwave/flush", timeout=14400)
+        resp.raise_for_status()
+        return None
+    def _run_materialize_emulator(self, batch_num: int) -> Optional[str]:
+        name = "materialize-emulator"
+        action = "init" if batch_num == 1 else f"append/{batch_num}"
+        response = requests.post(f"{self._dbt_url}/sources/{name}/{action}", timeout=7200)
+        response.raise_for_status()
+        run_id = None
+        if batch_num == 1:
+            response = requests.post(
+                f"{self._dbt_url}/run/{name}",
+                json={"scale_factor": self._config.scale_factor, "full_refresh": False, "batch_num": 1},
+                timeout=30,
+            )
+            response.raise_for_status()
+            run_id = response.json()["run_id"]
+            self._stream_dbt_progress(run_id, batch_num)
+            self._check_run_result(run_id, batch_num)
+            batch = self._result.batches[batch_num - 1]
+            if batch.status == "failed":
+                raise RuntimeError(batch.error or "Materialize Emulator dbt build failed")
+        response = requests.post(f"{self._dbt_url}/sources/{name}/fence", timeout=7260)
+        response.raise_for_status()
+        self._result.batches[batch_num - 1].extra["completion_fence"] = response.json()
+        return run_id
 
     def _run_feldera_batch1(self) -> None:
         """Feldera batch 1: compile pipeline (paused), resume, then poll for processing.
@@ -2168,6 +2333,10 @@ class EngineRunner:
                 f.write(csv_payloads.get(key, ""))
 
         metadata = {k: v for k, v in data.items() if k != "csv"}
+        if os.environ.get("OPENIVM_CAPTURE_SQL", "0") == "1":
+            metadata["preserved_sql_archive_dir"] = _preserve_duckdb_openivm_sql(
+                self._config.repo_dir, self._config.scale_factor, batch_num,
+                data.get("sql_archive_paths") or [])
         with open(
             os.path.join(results_dir, f"openivm-profile-export-batch{batch_num}.json"),
             "w",
@@ -3179,6 +3348,9 @@ class EngineRunner:
                 "metadata_bytes": totals.get("metadata_bytes", 0),
                 "source_bytes": totals.get("source_bytes", 0),
                 "total_bytes": totals.get("total_bytes", 0),
+                "physical_state_bytes": (data.get("physical_state") or {}).get(
+                    "allocated_bytes"
+                ),
                 "overhead_ratio_helper_to_visible": data.get(
                     "overhead_ratio_helper_to_visible"
                 ),
@@ -3189,10 +3361,14 @@ class EngineRunner:
             elif data.get("error"):
                 batch.extra["storage"]["errors"] = [str(data["error"])]
             status = batch.extra["storage"]["status"]
+            physical_bytes = batch.extra["storage"]["physical_state_bytes"]
+            physical_log = (
+                f" physical={physical_bytes}B" if physical_bytes is not None else ""
+            )
             self._emit(
                 f"[{name}] Storage metrics captured for batch {batch_num}: "
                 f"visible={totals.get('visible_output_bytes', 0)}B "
-                f"helper={totals.get('helper_data_bytes', 0)}B"
+                f"helper={totals.get('helper_data_bytes', 0)}B{physical_log}"
             )
             require_complete_storage_metrics(status, name, batch_num)
         except StorageMetricsError:
@@ -3366,6 +3542,13 @@ class EngineRunner:
             logger.warning("Failed to capture logs: %s", e)
 
     # ----- Health checking -----
+
+    def _resolve_dbt_server_port(self) -> None:
+        if not getattr(self, "_dynamic_dbt_port", False):
+            return
+        port = self._engine_mgr.published_port("dbt-server", 5000)
+        self._dbt_url = f"http://{self._docker_host}:{port}"
+        self._emit(f"[{self._engine.name}] dbt-server published on host port {port}")
 
     def _wait_for_dbt_health(self) -> None:
         """Wait for the dbt-server to become healthy."""
