@@ -1,10 +1,10 @@
 import { createHash } from 'node:crypto';
 import { mkdirSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
-import contract from '../website/contract.json' with { type: 'json' };
+import contract from './dashboard-contract.json' with { type: 'json' };
 import { writeDashboard } from "./dashboard-parquet.mjs";
 
-const folder = new URL('../website/public/data/', import.meta.url);
+const folder = new URL('./public/data/', import.meta.url);
 mkdirSync(folder, { recursive: true });
 
 const engines = {

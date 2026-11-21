@@ -1,0 +1,14 @@
+{
+  "name": "ivm-bench-dashboard-producer",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "fixture": "node dashboard-fixture.mjs",
+    "test": "node --disable-warning=ExperimentalWarning --test dashboard-*.test.*"
+  },
+  "dependencies": {
+    "@azure/storage-blob": "12.34.0",
+    "hyparquet": "1.33.0",
+    "hyparquet-writer": "0.18.0"
+  }
+}

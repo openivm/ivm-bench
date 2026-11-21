@@ -46,7 +46,7 @@ jq --argjson provenance "$provenance" '
 
 image=node:22-bookworm
 docker run --rm --user "$(id -u):$(id -g)" -e HOME=/tmp \
-  -v "$PWD/website:/workspace" -w /workspace "$image" npm ci --no-audit --no-fund
+  -v "$PWD/tools:/workspace" -w /workspace "$image" npm ci --no-audit --no-fund
 docker run --rm --user "$(id -u):$(id -g)" -e HOME=/tmp \
   -v "$PWD:/repo:ro" -v "$scratch:/run-meta:ro" -w /repo "$image" \
   node --env-file=/repo/.env --disable-warning=ExperimentalWarning \

@@ -1,7 +1,7 @@
 import { readFileSync } from 'node:fs';
 import { basename, join } from 'node:path';
 import { pathToFileURL } from 'node:url';
-import contract from '../website/contract.json' with { type: 'json' };
+import contract from './dashboard-contract.json' with { type: 'json' };
 import { sections, writeDashboard } from './dashboard-parquet.mjs';
 
 function read(root, path, optional = false) {
