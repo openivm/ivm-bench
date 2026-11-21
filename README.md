@@ -24,9 +24,9 @@ dbt across local Docker engines and managed cloud services.
 
 ### Benchmark dashboard
 
-The [IVM Bench dashboard](https://ivmbench.z9.web.core.windows.net/) visualizes published benchmark telemetry per commit: batch timings, engine resources, model coverage, and signals.
+The [IVM Bench dashboard](https://openivm.org/benchmark/) visualizes published benchmark telemetry per commit: batch timings, engine resources, model coverage, and signals.
 
-[![IVM Bench dashboard showing per-commit durations across three batches](imgs/ivm-bench-live-dashboard.jpg)](https://ivmbench.z9.web.core.windows.net/)
+[![IVM Bench dashboard showing per-commit durations across three batches](imgs/ivm-bench-live-dashboard.jpg)](https://openivm.org/benchmark/)
 
 ### Run a smoke benchmark
 

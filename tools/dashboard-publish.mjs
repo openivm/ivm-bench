@@ -1,14 +1,12 @@
 import { mkdtemp, readFile, rm } from 'node:fs/promises';
-import { createRequire } from 'node:module';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { setTimeout } from 'node:timers/promises';
-import { openDataset } from '../website/src/data.ts';
+import { openDataset } from './dashboard-data.ts';
+import { BlobServiceClient, StorageSharedKeyCredential } from '@azure/storage-blob';
 import { convert } from './dashboard-convert.mjs';
 import { retentionDays, sections, writeDashboard } from './dashboard-parquet.mjs';
 
-const require = createRequire(new URL('../website/package.json', import.meta.url));
-const { BlobServiceClient, StorageSharedKeyCredential } = await import(require.resolve('@azure/storage-blob'));
 const account = process.env.BENCHMARK_STORAGE_ACCOUNT_NAME;
 const key = process.env.BENCHMARK_STORAGE_ACCOUNT_KEY;
 const container = process.env.BENCHMARK_STORAGE_ACCOUNT_CONTAINER_PARQUET_PUBLIC;
@@ -45,7 +43,7 @@ async function publish(root, identityPath) {
           if (!exactName.test(item.name)) continue;
           const blob = blobs.getBlobClient(item.name);
           const data = await blob.downloadToBuffer(0, undefined, { conditions: { ifMatch: item.properties.etag } });
-          const source = await openDataset(new File([data], item.name), () => {});
+          const source = await openDataset(new File([data], item.name));
           const runs = await source.read('run');
           if (source.report.dataset !== 'ci' || runs.length !== 1 || runs[0].commit_sha !== item.name.slice(0, 40)) {
             throw new Error(`Invalid snapshot ${item.name}.`);

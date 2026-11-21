@@ -1,8 +1,5 @@
-import { createRequire } from 'node:module';
-import contract from '../website/contract.json' with { type: 'json' };
-
-const require = createRequire(new URL('../website/package.json', import.meta.url));
-const { parquetWriteFile } = await import(require.resolve('hyparquet-writer'));
+import { parquetWriteFile } from 'hyparquet-writer';
+import contract from './dashboard-contract.json' with { type: 'json' };
 export const sections = Object.keys(contract.sections);
 const indexed = new Set(['section', 'committed_at', 'commit_sha']);
 export const requiredFields = Object.assign({}, contract.common, ...Object.values(contract.sections));

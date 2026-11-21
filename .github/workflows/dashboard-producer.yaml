@@ -1,0 +1,27 @@
+name: Dashboard producer
+
+on:
+  pull_request:
+    paths: ['tools/dashboard-*', 'tools/package*.json', '.github/workflows/dashboard-producer.yaml']
+  push:
+    branches: [main]
+    paths: ['tools/dashboard-*', 'tools/package*.json', '.github/workflows/dashboard-producer.yaml']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: tools/package-lock.json
+      - run: npm ci
+        working-directory: tools
+      - run: npm run fixture && npm test
+        working-directory: tools
