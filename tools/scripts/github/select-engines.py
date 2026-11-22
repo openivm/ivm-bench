@@ -189,15 +189,23 @@ def render_dump(containers: Path) -> Dict[str, Dict[str, str]]:
     sys.path.insert(0, str(containers))
     from sql_catalog import generator
 
-    root = str(containers.resolve())
     dump = {}
+    targets = generator._project_targets()
+    skips = generator._skips()
     for engine in generator._load_engines():
         rendered = {}
         for category, name in generator._entry_names():
-            try:
-                text = generator.render_sql(engine, category, name)
-            except Exception as error:  # an entry an engine cannot render is part of its output
-                text = f"!{type(error).__name__}: {error}".replace(root, "")
+            key = (engine, category, name)
+            if category != "inline" and key not in targets:
+                continue
+            if key in skips:
+                continue
+            if category == "inline" and not (
+                generator._catalog_path(category, name).is_file()
+                or generator._override_path(engine, category, name).is_file()
+            ):
+                continue
+            text = generator.render_sql(engine, category, name)
             rendered[f"{category}/{name}"] = hashlib.sha256(text.encode()).hexdigest()
         dump[engine] = rendered
     return dump

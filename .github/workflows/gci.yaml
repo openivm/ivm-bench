@@ -87,6 +87,8 @@ jobs:
     if: needs.changes.outputs.mode == 'none'
     runs-on: [self-hosted, Linux, X64, ivm-bench-azure]
     steps:
+      - name: "🧹 Clean Docker-owned files"
+        run: sudo rm -rf mount/ 2>/dev/null || true
       - uses: actions/checkout@v4
         with:
           clean: true
