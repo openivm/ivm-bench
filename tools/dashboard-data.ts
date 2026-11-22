@@ -1,14 +1,12 @@
 import { parquetMetadataAsync, parquetReadObjects } from 'hyparquet';
 import type { AsyncBuffer, FileMetaData, SchemaElement } from 'hyparquet';
-import contract from '../contract.json' with { type: 'json' };
+import contract from './dashboard-contract.json' with { type: 'json' };
 
 export type Section = keyof typeof contract.sections;
 type Cell = string | number | boolean | bigint | Date | null;
 export type Row = Record<string, Cell>;
 export type Run = Row & { commit_sha: string; committed_at: number; subject: string; branch: string; workload: string };
 export type Batch = Row & { commit_sha: string; committed_at: number; engine: string; batch: number; duration_s: number | null };
-export interface ByteRange { start: number; end: number }
-export interface Meter { bytes: number; requests: number; size: number; ranges?: ByteRange[] }
 const sections = Object.keys(contract.sections) as Section[];
 const eager: Section[] = ['run', 'engine_batch'];
 const fields = (section: Section) => ({ ...contract.common, ...contract.sections[section] });
@@ -85,74 +83,8 @@ export function planGroups(metadata: FileMetaData, section: Section, filter: { s
   });
 }
 
-export function parquetLayout(metadata: FileMetaData, size: number) {
-  const groups = metadata.row_groups.map((group, i) => {
-    const stats = group.columns.find(c => c.meta_data?.path_in_schema[0] === 'section')?.meta_data?.statistics;
-    const section = typeof stats?.min_value === 'string' && stats.min_value === stats.max_value ? stats.min_value : 'mixed / unknown';
-    const chunks = group.columns.flatMap(({ meta_data: m, file_path }) => {
-      if (!m || file_path) return [];
-      const start = Number(m.dictionary_page_offset ?? m.data_page_offset), end = start + Number(m.total_compressed_size);
-      return Number.isSafeInteger(start) && Number.isSafeInteger(end) && start >= 4 && end <= size && end > start ? [{ start, end }] : [];
-    }).sort((a, b) => a.start - b.start);
-    const spans: ByteRange[] = [];
-    for (const chunk of chunks) {
-      const previous = spans.at(-1);
-      if (previous && previous.end >= chunk.start) previous.end = Math.max(previous.end, chunk.end);
-      else spans.push({ ...chunk });
-    }
-    return { id: i + 1, section, spans, bytes: chunks.reduce((n, x) => n + x.end - x.start, 0), columns: group.columns.length };
-  });
-  return { groups, footer: { start: Math.max(4, size - metadata.metadata_length - 8), end: size } };
-}
-
-async function request(url: string, init: RequestInit) {
-  try { return await fetch(url, { ...init, credentials: 'omit', cache: 'no-store' }); } catch (error) {
-    if (init.signal?.aborted) throw error;
-    throw new Error('Cannot reach the Parquet URL. Check network access and CORS for HEAD, GET, Range and If-Match.', { cause: error });
-  }
-}
-
-export async function openDataset(source: string | File, update: (meter: Meter) => void, signal?: AbortSignal) {
-  const meter: Meter = { requests: 0, bytes: 0, size: 0, ranges: [] };
-  let etag: string | null = null;
-  let file: AsyncBuffer;
-  if (typeof source !== 'string') {
-    meter.size = source.size;
-    file = { byteLength: source.size, slice: (start, end) => source.slice(start, end).arrayBuffer() };
-  } else {
-    const url = new URL(source, location.href);
-    if (!['http:', 'https:'].includes(url.protocol)) throw new Error('Enter an HTTP or HTTPS Parquet URL.');
-    const info = await request(url.href, { method: 'HEAD', signal });
-    if (info.status === 404) throw new Error('No published runs: Parquet file not found (404).');
-    if (!info.ok) throw new Error(`Parquet request failed (HTTP ${info.status}).`);
-    const length = Number(info.headers.get('Content-Length'));
-    if (!Number.isSafeInteger(length) || length < 8) throw new Error('Parquet host must expose a valid Content-Length.');
-    etag = info.headers.get('ETag');
-    if (!etag || etag.startsWith('W/')) throw new Error('Parquet host must expose a strong ETag to pin range reads.');
-    const pinned = etag;
-    meter.size = length;
-    file = {
-      byteLength: length,
-      async slice(start, end = length) {
-        const response = await request(url.href, {
-          headers: { Range: `bytes=${start}-${end - 1}`, 'If-Match': pinned }, signal,
-        });
-        if (response.status === 412) throw new Error('The Parquet file changed during this read. Reload to use the new version.');
-        if (response.status !== 206 || response.headers.get('Content-Range') !== `bytes ${start}-${end - 1}/${length}`) {
-          await response.body?.cancel();
-          throw new Error('Expected HTTP 206 with Content-Range. Check range support and CORS response headers.');
-        }
-        const data = await response.arrayBuffer();
-        if (data.byteLength !== end - start) throw new Error('The Parquet range response was incomplete.');
-        meter.requests++;
-        meter.bytes += data.byteLength;
-        meter.ranges!.push({start,end});
-        update({ ...meter, ranges:[...meter.ranges!] });
-        return data;
-      },
-    };
-  }
-  update({ ...meter });
+export async function openDataset(source: File) {
+  const file: AsyncBuffer = { byteLength: source.size, slice: (start, end) => source.slice(start, end).arrayBuffer() };
   const metadata = await parquetMetadataAsync(file, { initialFetchSize: 64 * 1024 });
   const report = validate(metadata);
   const cached = new Map<string, Promise<Row[]>>();
@@ -189,7 +121,5 @@ export async function openDataset(source: string | File, update: (meter: Meter) 
     }
     return results;
   }
-  return { read, report, etag, size: meter.size, source, layout:parquetLayout(metadata,meter.size) };
+  return { read, report };
 }
-
-export type Dataset = Awaited<ReturnType<typeof openDataset>>;

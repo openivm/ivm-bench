@@ -1,7 +1,8 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
+import { readFile } from 'node:fs/promises';
 import { asyncBufferFromFile, parquetMetadataAsync } from 'hyparquet';
-import { epoch, parquetLayout, planGroups, validate } from './data.ts';
+import { epoch, openDataset, planGroups, validate } from './dashboard-data.ts';
 
 const read = async (name: string) => parquetMetadataAsync(await asyncBufferFromFile(`public/data/${name}`));
 
@@ -30,13 +31,12 @@ test('prunes by section and commit date but keeps groups without usable statisti
   assert.ok(Number.isNaN(epoch(2n ** 55n)));
 });
 
-test('Parquet map counts compressed data, not index or footer gaps', async () => {
-  const file = await asyncBufferFromFile('public/data/one-commit.parquet');
-  const metadata = await parquetMetadataAsync(file);
-  const layout = parquetLayout(metadata, file.byteLength);
-  const batch = layout.groups.find(group => group.section === 'engine_batch')!;
-  const group = metadata.row_groups[batch.id - 1];
-  assert.equal(batch.bytes, group.columns.reduce((sum,c) => sum + Number(c.meta_data?.total_compressed_size ?? 0), 0));
-  assert.ok(batch.spans.every(span => span.end <= layout.footer.start));
-  assert.equal(layout.footer.end, file.byteLength);
+test('reads snapshot sections for merging and rejects incompatible snapshots', async () => {
+  const file = new File([await readFile('public/data/one-commit.parquet')], 'one-commit.parquet');
+  const snapshot = await openDataset(file);
+  assert.equal((await snapshot.read('run')).length, 1);
+  assert.equal((await snapshot.read('engine_batch')).length, 24);
+  assert.equal((await snapshot.read('model')).length, snapshot.report.counts.get('model'));
+  const incompatible = new File([await readFile('public/data/incompatible.parquet')], 'incompatible.parquet');
+  await assert.rejects(openDataset(incompatible), /expected Parquet contract v1/);
 });

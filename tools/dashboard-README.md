@@ -1,14 +1,10 @@
-# IVM Bench dashboard
+# IVM Bench dashboard producer
 
-From `website\`, run `npm ci`, `npm run build:fixture`, then `npm run preview`. Open `http://127.0.0.1:4175/`. `npm run build:fixture` generates the deterministic fixtures before bundling. Only synthetic measurements are served by default; `VITE_PARQUET_URL` changes the default and `?data=` overrides it for one view.
-
-Open **Data** to inspect provenance and supported panels, load another Parquet URL, or choose/drop a local file. A URL selection can be shared with the dashboard link; a local file stays in the current browser tab and is never uploaded. The preview includes `/data/one-commit.parquet` and `/data/incompatible.parquet` for exercising both outcomes.
-
-The Data byte map uses physical offsets and compressed column-chunk sizes from the footer. Its highlights indicate HTTP bytes fetched in this browser session; the footer meter counts repeated transfers separately. Row groups without a single section identified by statistics remain visible as mixed or unknown.
+The [dashboard](https://openivm.org/benchmark/) is maintained in the openivm-site repository. From `tools/`, run `npm ci`, `npm run fixture`, and `npm test` to validate this repository's producer and its synthetic Parquet fixtures.
 
 ## Parquet v1
 
-[`contract.json`](contract.json) is the authoritative column catalog shared by the reader and generator. A file can contain one published commit or a retained history. Publication is independent of the site: only successful benchmark runs with a passing engine coverage verdict enter the dataset. On pull requests `commit_sha` is the head commit, not the merge commit. Manual GCI runs record the executed default-branch commit.
+[`dashboard-contract.json`](dashboard-contract.json) defines the producer's column catalog and must remain compatible with the site's reader. A file can contain one published commit or a retained history. Publication is independent of the site: only successful benchmark runs with a passing engine coverage verdict enter the dataset. On pull requests `commit_sha` is the head commit, not the merge commit. Manual GCI runs and pushes to `main` record the executed default-branch commit.
 
 - Use Snappy compression and dictionary encoding where it reduces size. Store `ivmbench.schema_version` (`1.0`), `dataset` (`synthetic` or `ci`), `generated_at` (ISO 8601 UTC), `retention_days` (integer), `workload` (stable workload ID), and `section_rows` (JSON map from section to row count) as file key/value metadata.
 - Put exactly one section in each row group. Emit min/max statistics for `section`, `committed_at`, and `commit_sha` (untruncated). Put eager sections first, with newer engine-batch groups first, and cluster detail sections by commit time. The reader skips groups when statistics exclude them, then checks decoded rows. A group can hold multiple commits to limit footer size.
@@ -32,10 +28,10 @@ The optional `run.batch_insert_pct_json` column is a JSON object keyed by batch 
 
 The fixture pairs the Spark OpenIVM refresh regression with compaction and spill retries, DuckDB OpenIVM's coverage drop with planner fallbacks, RisingWave's memory and initial-load shift with connector pressure, and Feldera's storage amplification with deferred compaction. Synthetic `ERROR` excerpts show recovered operations within successful runs.
 
-The local preview serves only `dist` on loopback. A remote Parquet source needs `HEAD`, `GET`, byte ranges, and a strong ETag. Cross-origin hosts must accept `Range` and `If-Match` and expose `Content-Range`, `Content-Length` and `ETag`. A change to the object mid-read fails rather than mixing revisions.
+A remote Parquet source needs `HEAD`, `GET`, byte ranges, and a strong ETag. Cross-origin hosts must accept `Range` and `If-Match` and expose `Content-Range`, `Content-Length` and `ETag`. A change to the object mid-read fails rather than mixing revisions.
 
 ## Publishing
 
-Successful same-repository GCI runs with passing coverage invoke `tools/dashboard-ci.sh`. The publisher reads the runner's storage settings from its environment, writes the per-commit snapshot first, and conditionally replaces `_server.parquet` with a 365-day window. An ETag conflict triggers a fresh list and merge, up to four attempts. Old snapshots are deleted after the merged file is published. Unrecorded engine versions and incrementalization measurements remain null; an empty log section means no matching, safe messages were captured.
+Successful same-repository GCI runs that cover every local engine (full-suite PR runs, pushes to `main`, and default-branch dispatches) with passing coverage invoke `tools/dashboard-ci.sh`. The publisher reads the runner's storage settings from its environment, writes the per-commit snapshot first, and conditionally replaces `_server.parquet` with a 365-day window. An ETag conflict triggers a fresh list and merge, up to four attempts. Old snapshots are deleted after the merged file is published. Unrecorded engine versions and incrementalization measurements remain null; an empty log section means no matching, safe messages were captured.
 
-Use `VITE_PARQUET_URL=https://ivmbench.blob.core.windows.net/parquet/_server.parquet npm run build` in `website/` for the production bundle. Only `build:fixture` copies synthetic Parquet to `dist`. The dashboard workflow checks PR builds, deploys on matching changes to `main`, and supports manual dispatch once it is registered on the default branch. The deployment and `cors` modes of `tools/dashboard-storage.sh` require Azure CLI, jq, and benchmark storage settings in the environment. The CORS mode adds the site and loopback origins without clearing unrelated rules.
+The dashboard producer workflow checks fixtures and tests on pull requests. `tools/dashboard-storage.sh cors` requires Azure CLI, jq, and benchmark storage settings; it adds explicit site and loopback origins without clearing unrelated rules.

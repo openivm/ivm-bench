@@ -19,10 +19,10 @@ case "$GITHUB_EVENT_NAME" in
       {commit_sha: .head.sha, branch: .head.ref, pr_number: .number, pr_title: .title}
     ' "$GITHUB_EVENT_PATH")" || { echo 'Dashboard publication requires a same-repository PR.' >&2; exit 1; }
     ;;
-  workflow_dispatch)
+  workflow_dispatch|push)
     executed_sha="$(git rev-parse --verify HEAD)"
     if [[ "$executed_sha" != "$GITHUB_SHA" || "$GITHUB_REF" != refs/heads/* ]]; then
-      echo 'Dashboard publication requires the dispatched branch checkout.' >&2
+      echo 'Dashboard publication requires the dispatched or pushed branch checkout.' >&2
       exit 1
     fi
     provenance="$(jq -cn --arg sha "$executed_sha" --arg branch "${GITHUB_REF#refs/heads/}" \
@@ -46,7 +46,7 @@ jq --argjson provenance "$provenance" '
 
 image=node:22-bookworm
 docker run --rm --user "$(id -u):$(id -g)" -e HOME=/tmp \
-  -v "$PWD/website:/workspace" -w /workspace "$image" npm ci --no-audit --no-fund
+  -v "$PWD/tools:/workspace" -w /workspace "$image" npm ci --no-audit --no-fund
 docker run --rm --user "$(id -u):$(id -g)" -e HOME=/tmp \
   -v "$PWD:/repo:ro" -v "$scratch:/run-meta:ro" -w /repo "$image" \
   node --env-file=/repo/.env --disable-warning=ExperimentalWarning \
