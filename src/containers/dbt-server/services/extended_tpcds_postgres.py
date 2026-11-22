@@ -77,12 +77,18 @@ class RisingWavePostgres(NativePostgres):
             return f"CAST({value} AS {target})"
 
 
-def compact_date(value, engine):
+def compact_date(value, engine, *, strict=False):
     year, month, day = (f"SUBSTRING({value}, {start}, {length})"
                         for start, length in ((1, 4), (5, 2), (7, 2)))
+    iso_date = f"{year} || '-' || {month} || '-' || {day}"
+    if strict:
+        # The generator emits these event keys with strftime('%Y%m%d').
+        # Parse their ISO spelling without the unsupported two-argument
+        # to_timestamp overload and preserve DuckDB's unzoned result.
+        return f"CAST({iso_date} AS TIMESTAMP)"
     first = f"{year} || '-' || {month} || '-01'"
     if engine == 'materialize-emulator':
-        return f"CASE WHEN {value} ~ '^[0-9]{{8}}$' THEN TRY_CAST({year} || '-' || {month} || '-' || {day} AS DATE) END"
+        return f"CASE WHEN {value} ~ '^[0-9]{{8}}$' THEN TRY_CAST({iso_date} AS DATE) END"
     # Build from the first of a valid month. Checking the resulting month
     # rejects impossible dates, including February 29 in non-leap years.
     shifted = f"CAST({first} AS DATE) + (CAST({day} AS INT) - 1) * INTERVAL '1 DAY'"
@@ -95,17 +101,27 @@ def render(query, engine):
     from services.extended_tpcds_streaming import lower_first_value_nulls
     tree = sqlglot.parse_one(query, read='duckdb')
     lower_first_value_nulls(tree, engine)
+    if engine == 'risingwave':
+        for window in tree.find_all(exp.Window):
+            if window.args.get('over') and not window.args.get('partition_by') and not window.args.get('alias'):
+                # A typed constant represents one partition of all the rows.
+                window.set('partition_by', [exp.cast(exp.Literal.number(1), 'INT')])
     for interval in list(tree.find_all(exp.Interval)):
         if not isinstance(interval.this, exp.Literal):
             unit_interval = exp.Interval(this=exp.Literal.string('1'), unit=interval.args['unit'].copy())
             interval.replace(exp.Paren(this=exp.Mul(this=interval.this.copy(), expression=unit_interval)))
-    for function in list(tree.find_all(exp.Anonymous)):
-        if function.name.upper() == 'TRY_STRPTIME':
+    for function in list(tree.find_all(exp.StrToTime, exp.Anonymous)):
+        strict = isinstance(function, exp.StrToTime)
+        if strict:
+            value, pattern = function.this, function.args['format']
+        elif function.name.upper() == 'TRY_STRPTIME':
             value, pattern = function.expressions
-            if pattern.this != '%Y%m%d':
-                raise ValueError('unsupported workload date format')
-            value_sql = exp.Paren(this=value.copy()).sql(dialect=NativePostgres)
-            function.replace(sqlglot.parse_one(compact_date(value_sql, engine), read='postgres'))
+        else:
+            continue
+        if not isinstance(pattern, exp.Literal) or pattern.this != '%Y%m%d':
+            raise ValueError('unsupported workload date format')
+        value_sql = exp.Paren(this=value.copy()).sql(dialect=NativePostgres)
+        function.replace(sqlglot.parse_one(compact_date(value_sql, engine, strict=strict), read='postgres'))
     dialect = RisingWavePostgres if engine == 'risingwave' else NativePostgres
     query = tree.sql(dialect=dialect, identify=True, unsupported_level=sqlglot.ErrorLevel.RAISE)
     if engine == 'risingwave':

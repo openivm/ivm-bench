@@ -30,6 +30,7 @@ class PostgresWorkloadTests(unittest.TestCase):
                 self.assertIn('TRY_CAST(',queries['meta_ingestion'])
             self.assertTrue(all('INTERVAL DAY' not in sql and 'INTERVAL MONTH' not in sql
                                 for sql in queries.values()))
+            self.assertTrue(all('TO_TIMESTAMP(' not in sql.upper() for sql in queries.values()))
             self.assertNotIn('IGNORE NULLS',queries['int_channel_status_latest'])
             self.assertIn('IS NULL',queries['int_channel_status_latest'])
 
@@ -65,6 +66,28 @@ class PostgresWorkloadTests(unittest.TestCase):
                 self.assertIn("INTERVAL '1 DAY'", sql)
                 self.assertIn("INTERVAL '1 MONTH'", sql)
                 self.assertEqual(db.execute(sql).fetchall(), expected)
+
+    def test_strptime_event_keys_remain_unzoned_and_support_second_offsets(self):
+        query = """SELECT STRPTIME(k, '%Y%m%d') + seconds * INTERVAL '1' SECOND
+                   FROM (VALUES ('20000229', 3605), ('20021231', 86399), (NULL, 1)) AS t(k, seconds)"""
+        with duckdb.connect() as db:
+            expected = db.execute(query).fetchall()
+            for engine in pg.ENGINES:
+                sql = pg.render(query, engine)
+                self.assertNotIn('TO_TIMESTAMP(', sql.upper())
+                self.assertEqual(db.execute(sql).fetchall(), expected)
+                self.assertEqual(db.execute(f'SELECT typeof(ts) FROM ({sql}) AS result(ts) LIMIT 1').fetchone(),
+                                 ('TIMESTAMP',))
+
+    def test_risingwave_global_window_uses_one_partition_and_preserves_grouped_window(self):
+        query = """SELECT k, v, ROW_NUMBER() OVER (ORDER BY v DESC, k) AS global_rank,
+                          ROW_NUMBER() OVER (PARTITION BY k ORDER BY v DESC) AS group_rank
+                   FROM (VALUES (1, 8), (1, 3), (2, 7), (2, NULL)) AS t(k,v)"""
+        sql = pg.render(query, 'risingwave')
+        self.assertIn('PARTITION BY CAST(1 AS INT)', sql)
+        self.assertIn('PARTITION BY "k"', sql)
+        with duckdb.connect() as db:
+            self.assertCountEqual(db.execute(sql).fetchall(), db.execute(query).fetchall())
 
     def test_copy_is_bounded_and_preserves_uuid_nulls_and_escaped_values(self):
         with tempfile.TemporaryDirectory() as folder:
