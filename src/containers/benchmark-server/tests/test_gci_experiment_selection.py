@@ -1,4 +1,4 @@
-"""GCI runs one fixed local-engine preset; CI runs every engine or what it is asked."""
+"""GCI runs its local-engine preset, narrowed to affected engines on PRs; CI runs what it is asked."""
 
 import os
 import re
@@ -77,7 +77,7 @@ class PresetCoverageTest(unittest.TestCase):
                     self.assertFalse(experiment.feature_flags.compiler_bench)
                     self.assertFalse(experiment.feature_flags.cost_model_bench)
 
-    def test_gci_is_pinned_to_its_preset_with_no_knobs(self):
+    def test_gci_is_pinned_to_its_preset_with_no_dispatch_knobs(self):
         gci = (WORKFLOWS / "gci.yaml").read_text(encoding="utf-8")
         self.assertIn("uses: ./.github/workflows/ci.yaml", gci)
         self.assertIn(f"experiments_file: {GCI_PRESET}", gci)
@@ -109,18 +109,62 @@ class PresetCoverageTest(unittest.TestCase):
             "${DBT_SERVER_DYNAMIC_PORT:-0}",
         )
 
-    def test_workflow_triggers_keep_pr_and_manual_paths_separate(self):
+    def test_workflow_triggers_keep_pr_main_and_manual_paths_separate(self):
         gci = yaml.load((WORKFLOWS / "gci.yaml").read_text(), Loader=yaml.BaseLoader)
         ci = yaml.load((WORKFLOWS / "ci.yaml").read_text(), Loader=yaml.BaseLoader)
-        self.assertEqual(set(gci["on"]), {"pull_request", "workflow_dispatch"})
+        self.assertEqual(set(gci["on"]), {"pull_request", "push", "workflow_dispatch"})
+        self.assertEqual(gci["on"]["push"], {"branches": ["main"]})
         self.assertEqual(gci["on"]["workflow_dispatch"], "")
         self.assertIn("synchronize", gci["on"]["pull_request"]["types"])
         self.assertIn("ready_for_review", gci["on"]["pull_request"]["types"])
         self.assertEqual(set(ci["on"]), {"workflow_dispatch", "workflow_call"})
         self.assertEqual(len(ci["on"]["workflow_dispatch"]["inputs"]), 25)
-        gci_inputs = gci["jobs"]["benchmark"]["with"]
-        self.assertEqual(set(gci_inputs), {"experiments_file", "pr_number", "publish_dashboard"})
-        self.assertEqual(gci_inputs["publish_dashboard"], "true")
+        self.assertIn("experiments_engines", ci["on"]["workflow_call"]["inputs"])
+        gci_inputs = gci["jobs"]["engines"]["with"]
+        self.assertEqual(
+            set(gci_inputs), {"experiments_file", "experiments_engines", "pr_number", "publish_dashboard"}
+        )
+        self.assertEqual(gci_inputs["publish_dashboard"], "${{ needs.changes.outputs.mode == 'full' }}")
+        self.assertIn("mode == 'subset'", gci_inputs["experiments_engines"])
+
+    def test_required_check_is_an_always_running_gate(self):
+        gate = yaml.load((WORKFLOWS / "gci.yaml").read_text(), Loader=yaml.BaseLoader)["jobs"]["gate"]
+        self.assertEqual(gate["name"], "benchmark / benchmark")
+        self.assertEqual(set(gate["needs"]), {"changes", "engines", "checks"})
+        self.assertTrue(gate["if"].startswith("always()"))
+
+    def test_each_main_push_runs_and_publishes_in_its_own_concurrency_group(self):
+        for name in ("gci.yaml", "ci.yaml"):
+            workflow = yaml.load((WORKFLOWS / name).read_text(), Loader=yaml.BaseLoader)
+            with self.subTest(workflow=name):
+                self.assertIn("format('push-{0}', github.run_id)", workflow["concurrency"]["group"])
+        publish = next(
+            step for step in yaml.load((WORKFLOWS / "ci.yaml").read_text(), Loader=yaml.BaseLoader)
+            ["jobs"]["benchmark"]["steps"] if step.get("name") == "Publish dashboard snapshot"
+        )
+        self.assertIn("github.event_name == 'push'", publish["if"])
+
+    def test_dashboard_publisher_records_main_push_provenance(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            subprocess.run(["git", "init", "-q"], cwd=root, check=True)
+            subprocess.run(["git", "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q",
+                            "--allow-empty", "-m", "x"], cwd=root, check=True)
+            sha = subprocess.run(["git", "rev-parse", "HEAD"], cwd=root, check=True,
+                                 capture_output=True, text=True).stdout.strip()
+            (root / "ci-results").mkdir()
+            (root / "ci-results/engine-coverage.json").write_text('{"passed": true}')
+            (root / "bin").mkdir()
+            (root / "bin/curl").write_text('#!/bin/sh\necho "curl $*" >&2\nexit 7\n')
+            (root / "bin/curl").chmod(0o755)
+            result = subprocess.run(
+                ["bash", str(REPO / "tools/dashboard-ci.sh")], cwd=root, text=True, capture_output=True,
+                env={**os.environ, "PATH": f"{root / 'bin'}:{os.environ['PATH']}",
+                     "GITHUB_EVENT_NAME": "push", "GITHUB_SHA": sha, "GITHUB_REF": "refs/heads/main",
+                     "GITHUB_REPOSITORY": "openivm/ivm-bench", "GITHUB_API_URL": "https://api.invalid",
+                     "GH_TOKEN": "token", "RUNNER_TEMP": directory},
+            )
+        self.assertIn(f"/repos/openivm/ivm-bench/commits/{sha}", result.stderr)
 
 
 if __name__ == "__main__":

@@ -1,6 +1,10 @@
 # Manual cloud CI
 
-Cloud CI is opt-in; GCI still gates PRs using local engines. In
+Cloud CI is opt-in; GCI still gates PRs using the affected local engines and
+runs every local engine after each merge to `main` (see
+[affected engines](CI_VS_GCI.md#affected-engines)). Cloud engines never run in
+GCI. To reproduce a GCI subset, dispatch CI with the GCI preset and
+`-f experiments_engines=<engine>[,<engine>...]`. In
 [privy hub](http://127.0.0.1:7748/ui/relay-sas), mint an HTTPS sender URL
 with enough TTL for the run (for example, six hours). Paste the full URL at
 the secret prompt, never into command history. A repository admin creates the

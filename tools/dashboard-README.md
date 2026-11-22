@@ -4,7 +4,7 @@ The [dashboard](https://openivm.org/benchmark/) is maintained in the openivm-sit
 
 ## Parquet v1
 
-[`dashboard-contract.json`](dashboard-contract.json) defines the producer's column catalog and must remain compatible with the site's reader. A file can contain one published commit or a retained history. Publication is independent of the site: only successful benchmark runs with a passing engine coverage verdict enter the dataset. On pull requests `commit_sha` is the head commit, not the merge commit. Manual GCI runs record the executed default-branch commit.
+[`dashboard-contract.json`](dashboard-contract.json) defines the producer's column catalog and must remain compatible with the site's reader. A file can contain one published commit or a retained history. Publication is independent of the site: only successful benchmark runs with a passing engine coverage verdict enter the dataset. On pull requests `commit_sha` is the head commit, not the merge commit. Manual GCI runs and pushes to `main` record the executed default-branch commit.
 
 - Use Snappy compression and dictionary encoding where it reduces size. Store `ivmbench.schema_version` (`1.0`), `dataset` (`synthetic` or `ci`), `generated_at` (ISO 8601 UTC), `retention_days` (integer), `workload` (stable workload ID), and `section_rows` (JSON map from section to row count) as file key/value metadata.
 - Put exactly one section in each row group. Emit min/max statistics for `section`, `committed_at`, and `commit_sha` (untruncated). Put eager sections first, with newer engine-batch groups first, and cluster detail sections by commit time. The reader skips groups when statistics exclude them, then checks decoded rows. A group can hold multiple commits to limit footer size.
@@ -32,6 +32,6 @@ A remote Parquet source needs `HEAD`, `GET`, byte ranges, and a strong ETag. Cro
 
 ## Publishing
 
-Successful same-repository GCI runs with passing coverage invoke `tools/dashboard-ci.sh`. The publisher reads the runner's storage settings from its environment, writes the per-commit snapshot first, and conditionally replaces `_server.parquet` with a 365-day window. An ETag conflict triggers a fresh list and merge, up to four attempts. Old snapshots are deleted after the merged file is published. Unrecorded engine versions and incrementalization measurements remain null; an empty log section means no matching, safe messages were captured.
+Successful same-repository GCI runs that cover every local engine (full-suite PR runs, pushes to `main`, and default-branch dispatches) with passing coverage invoke `tools/dashboard-ci.sh`. The publisher reads the runner's storage settings from its environment, writes the per-commit snapshot first, and conditionally replaces `_server.parquet` with a 365-day window. An ETag conflict triggers a fresh list and merge, up to four attempts. Old snapshots are deleted after the merged file is published. Unrecorded engine versions and incrementalization measurements remain null; an empty log section means no matching, safe messages were captured.
 
 The dashboard producer workflow checks fixtures and tests on pull requests. `tools/dashboard-storage.sh cors` requires Azure CLI, jq, and benchmark storage settings; it adds explicit site and loopback origins without clearing unrelated rules.
