@@ -19,10 +19,10 @@ case "$GITHUB_EVENT_NAME" in
       {commit_sha: .head.sha, branch: .head.ref, pr_number: .number, pr_title: .title}
     ' "$GITHUB_EVENT_PATH")" || { echo 'Dashboard publication requires a same-repository PR.' >&2; exit 1; }
     ;;
-  workflow_dispatch)
+  workflow_dispatch|push)
     executed_sha="$(git rev-parse --verify HEAD)"
     if [[ "$executed_sha" != "$GITHUB_SHA" || "$GITHUB_REF" != refs/heads/* ]]; then
-      echo 'Dashboard publication requires the dispatched branch checkout.' >&2
+      echo 'Dashboard publication requires the dispatched or pushed branch checkout.' >&2
       exit 1
     fi
     provenance="$(jq -cn --arg sha "$executed_sha" --arg branch "${GITHUB_REF#refs/heads/}" \
