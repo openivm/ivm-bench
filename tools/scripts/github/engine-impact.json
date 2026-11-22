@@ -31,7 +31,6 @@
     "src/containers/sql_catalog/sql/**",
     "src/containers/sql_catalog/overrides/**",
     "src/containers/sql_catalog/engines.json",
-    "src/containers/sql_catalog/project_targets.json",
     "src/containers/sql_catalog/shared_overrides.json",
     "src/containers/sql_catalog/skips.json"
   ],
@@ -204,6 +203,7 @@
     "src/containers/spark-batch-loader/**",
     "src/containers/spark-digen-delta/**",
     "src/containers/sql_catalog/*.py",
+    "src/containers/sql_catalog/project_targets.json",
     "src/containers/tpc-di-gen/**",
     "src/infra/**",
     "tools/**"

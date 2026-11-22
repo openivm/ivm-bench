@@ -101,11 +101,11 @@ Python line or the line immediately above with
 `# sql-catalog: exempt <specific reason>`; the reason is mandatory.
 
 GCI renders the catalog for every engine at a PR's merge base and head when
-catalog data (`sql/`, `overrides/`, or the catalog JSON files) changes. It
+catalog data (`sql/`, `overrides/`, or rendering configuration) changes. It
 benchmarks only the local engines whose rendered SQL differs, so a shared Spark
 SQL change runs exactly the engines that inherit it. A change that alters the
 `sqlite` benchmark-server rendering, or any change to the generator code or
-the sqlglot pin, runs every local engine. See
+the sqlglot pin, or `project_targets.json`, runs every local engine. See
 [affected engines](CI_VS_GCI.md#affected-engines).
 
 On the minimal devbox host, run parity, the focused tests, and the full SQL

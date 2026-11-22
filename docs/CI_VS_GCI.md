@@ -25,7 +25,7 @@ A rename counts as a change to both its old and new path.
 | `no_effect` (docs, Markdown, images, catalog exceptions) | None |
 | An engine's `rules` (compose file, dbt project, container, handlers, pins, tests) | That engine plus its `depends_on` partners |
 | SQL catalog data (`sql_catalog` globs) | Engines whose rendered SQL differs between base and head |
-| `global` (workflows, tools, benchmark-server, dbt-server core, shared compose, generator code, dependency pins) | Every local engine |
+| `global` (workflows, tools, benchmark-server, dbt-server core, shared compose, generator code, project targets, dependency pins) | Every local engine |
 | Anything unclassified, or a selector error | Every local engine |
 
 More than `full_suite_fraction` (half) of the local engines also runs the

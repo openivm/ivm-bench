@@ -70,7 +70,8 @@ class SelectTest(unittest.TestCase):
 
     def test_framework_and_unclassified_paths_run_every_local_engine(self):
         for path in ("src/containers/benchmark-server/services/engine_runner.py",
-                     ".github/workflows/gci.yaml", "src/new-tool/run.sh"):
+                     ".github/workflows/gci.yaml", "src/new-tool/run.sh",
+                     "src/containers/sql_catalog/project_targets.json"):
             with self.subTest(path=path):
                 self.assertEqual(self.select("docs/ENGINES.md", path), ("full", set(LOCAL)))
 
@@ -156,13 +157,40 @@ class GitDiffTest(unittest.TestCase):
             catalog / "engines.json": json.dumps({"spark": "spark", "duckdb": "duckdb", "feldera": "postgres"}),
             catalog / "shared_overrides.json": "[]",
             catalog / "skips.json": "[]",
-            catalog / "project_targets.json": '{"models": [], "macros": []}',
+            catalog / "project_targets.json": json.dumps({"models": [
+                {"engines": ["duckdb", "feldera", "spark"], "paths": ["a"]}
+            ], "macros": []}),
             catalog / "sql/spark/models/a.sql": "SELECT 1 AS x\n",
             catalog / "overrides/feldera/models/a.sql": "-- catalog-override: pinned\nSELECT 1 AS x\n",
         }
         base = self.commit({path.as_posix(): text for path, text in files.items()})
         head = self.commit({(catalog / "sql/spark/models/a.sql").as_posix(): "SELECT 2 AS x\n"})
         self.assertEqual(selector.rendered_engine_diff(base, head, self.repo), {"spark", "duckdb"})
+
+    def test_unexpected_render_errors_force_full_even_if_unchanged(self):
+        catalog = Path(selector.CATALOG_DIR)
+        for name in ("__init__.py", "generator.py"):
+            target = self.repo / catalog / name
+            target.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy(REPO / catalog / name, target)
+        files = {
+            catalog / "engines.json": json.dumps({"duckdb": "duckdb"}),
+            catalog / "shared_overrides.json": "[]",
+            catalog / "skips.json": "[]",
+            catalog / "project_targets.json": json.dumps({"models": [
+                {"engines": ["duckdb"], "paths": ["a"]}
+            ], "macros": []}),
+            catalog / "sql/spark/models/a.sql": "{% if bad %}SELECT 1{% endif %}\n",
+            catalog / "sql/spark/inline/b.sql": "SELECT 1\n",
+        }
+        base = self.commit({path.as_posix(): text for path, text in files.items()})
+        head = self.commit({(catalog / "sql/spark/inline/b.sql").as_posix(): "SELECT 2\n"})
+        selection = selector.resolve(
+            Namespace(event="pull_request", force_full=False, base=base, head=head),
+            repo=self.repo,
+        )
+        self.assertEqual((selection.mode, set(selection.engines)), ("full", set(LOCAL)))
+        self.assertIn("selector error", selection.reasons[0][0])
 
 
 if __name__ == "__main__":

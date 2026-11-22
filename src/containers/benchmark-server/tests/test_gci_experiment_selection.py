@@ -1,6 +1,7 @@
 """GCI runs its local-engine preset, narrowed to affected engines on PRs; CI runs what it is asked."""
 
 import os
+import json
 import re
 import subprocess
 import sys
@@ -50,6 +51,23 @@ class ExperimentSelectionTest(unittest.TestCase):
 
     def test_pull_request_ignores_the_retired_gci_json(self):
         self.assertEqual(self.select("pull_request"), "")
+
+    def test_build_selection_uses_all_resolved_experiments(self):
+        helper = REPO / "tools/scripts/github/experiment-needs-engine.py"
+        for data, expected in (
+            ({"baseline": {"engines": ["duckdb"]}, "experiments": [{}]}, "false"),
+            ({"baseline": {"engines": ["risingwave"]}, "experiments": [{}]}, "true"),
+            ({"baseline": {"engines": ["duckdb"]}, "experiments": [
+                {}, {"engines": ["risingwave"]}
+            ]}, "true"),
+            ({"experiments": [{}]}, "false"),
+        ):
+            with self.subTest(data=data), tempfile.TemporaryDirectory() as directory:
+                path = Path(directory) / "experiments.json"
+                path.write_text(json.dumps(data))
+                result = subprocess.run([sys.executable, str(helper), str(path), "risingwave"],
+                                        check=True, capture_output=True, text=True)
+                self.assertEqual(result.stdout.strip(), expected)
 
 
 class PresetCoverageTest(unittest.TestCase):
