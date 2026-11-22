@@ -2234,12 +2234,7 @@ class EngineRunner:
             with open(os.path.join(results_dir, filename), "w", encoding="utf-8") as f:
                 f.write(csv_payloads.get(key, ""))
 
-        diagnostic = data.get("diagnostic")
-        if diagnostic:
-            with open(os.path.join(results_dir, f"openivm-merge-diagnostic-batch{batch_num}.json"),
-                      "w", encoding="utf-8") as f:
-                json.dump(diagnostic, f, indent=2)
-        metadata = {k: v for k, v in data.items() if k not in ("csv", "diagnostic")}
+        metadata = {k: v for k, v in data.items() if k != "csv"}
         if os.environ.get("OPENIVM_CAPTURE_SQL", "0") == "1":
             metadata["preserved_sql_archive_dir"] = _preserve_duckdb_openivm_sql(
                 self._config.repo_dir, self._config.scale_factor, batch_num,
