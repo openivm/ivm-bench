@@ -88,10 +88,14 @@ on:
         description: "% of existing staging rows to delete before batch 3 insert"
         default: "0"
         type: string
-      parallel:
-        description: "Run engines in parallel (0 or 1)"
-        default: "0"
-        type: string
+      runner:
+        description: "Benchmark machine (any uses the first available runner)"
+        default: any
+        type: choice
+        options:
+          - any
+          - ivm-bench-vmss-runner000000
+          - ivm-bench-vmss-runner000001
       schedule:
         description: "Scheduling mode: serial | parallel | serial-host-parallel-cloud"
         default: "serial-host-parallel-cloud"
@@ -134,7 +138,7 @@ on:
         type: string
 
 concurrency:
-  group: ci-${{ github.event_name == 'push' && format('push-{0}', github.run_id) || github.ref }}-${{ inputs.experiments_file || 'inline' }}-${{ inputs.experiments_engines || 'default' }}-${{ inputs.scale_factor }}-${{ inputs.engines }}
+  group: ci-${{ github.event_name == 'push' && format('push-{0}', github.run_id) || github.ref }}-${{ inputs.experiments_file || 'inline' }}-${{ inputs.experiments_engines || 'default' }}-${{ inputs.scale_factor }}-${{ inputs.engines }}-${{ inputs.runner || 'any' }}
   cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
 permissions:
@@ -144,7 +148,7 @@ permissions:
 
 jobs:
   benchmark:
-    runs-on: [self-hosted, Linux, X64, ivm-bench-azure]
+    runs-on: [self-hosted, Linux, X64, "${{ inputs.runner != 'any' && inputs.runner || 'ivm-bench-azure' }}"]
     environment: ${{ github.event_name == 'workflow_dispatch' && 'manual-run' || '' }}
     timeout-minutes: ${{ fromJSON(inputs.timeout_minutes || '500') }}
 
@@ -162,7 +166,6 @@ jobs:
       BATCH_2_DELETE_PCT: ${{ inputs.batch_2_delete_pct || '0' }}
       BATCH_3_UPDATE_PCT: ${{ inputs.batch_3_update_pct || '0' }}
       BATCH_3_DELETE_PCT: ${{ inputs.batch_3_delete_pct || '0' }}
-      PARALLEL: ${{ inputs.parallel || '0' }}
       SCHEDULE: ${{ inputs.schedule || 'serial-host-parallel-cloud' }}
       ENGINES: ${{ inputs.engines || 'databricks-enzyme,databricks-openivm,spark,spark-openivm,duckdb,duckdb-openivm,feldera,fabric-jvm-35,fabric-openivm-jvm-35,dbspnet,risingwave,materialize-emulator' }}
       PRESERVE_RAW: ${{ inputs.preserve_raw || '1' }}
@@ -217,7 +220,6 @@ jobs:
               echo "ERROR: spark_dbt_threads must be a positive integer (got: ${SPARK_DBT_THREADS_INPUT})"
               exit 1
             fi
-            parallel_b=$([[ "$PARALLEL" = "1" ]] && echo true || echo false)
             preserve_raw_b=$([[ "$PRESERVE_RAW" = "1" ]] && echo true || echo false)
             openivm_validate_b=$([[ "$OPENIVM_VALIDATE" = "1" ]] && echo true || echo false)
             openivm_profile_refresh_b=$([[ "$OPENIVM_PROFILE_REFRESH" = "1" ]] && echo true || echo false)
@@ -234,7 +236,6 @@ jobs:
               --arg b3d "$BATCH_3_DELETE_PCT" \
               --argjson engines "$engines_json" \
               --arg sdt "$SPARK_DBT_THREADS_INPUT" \
-              --argjson parallel "$parallel_b" \
               --arg schedule "$SCHEDULE" \
               --argjson preserve_raw "$preserve_raw_b" \
               --argjson openivm_validate "$openivm_validate_b" \
@@ -245,7 +246,6 @@ jobs:
                 _design_notes: ["Synthesised by .github/workflows/ci.yaml from per-knob inputs (1-row OAT sweep)."],
                 baseline: {
                   engines: $engines,
-                  parallel: $parallel,
                   schedule: $schedule,
                   feature_flags: {
                     preserve_raw: $preserve_raw,
