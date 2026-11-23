@@ -196,6 +196,21 @@ fi
         self.assertIn("returned a non-zero code: 128", message)
         self.assertLess(len(message), 8500)
 
+    def test_compose_build_timeout_retains_output_tails(self):
+        error = subprocess.TimeoutExpired(
+            "docker compose build", 3600,
+            output=b"build chatter\n" * 1000 + b"Step 5: installing GCC",
+            stderr=b"warning\n" * 1000 + b"503 Service Unavailable\xff",
+        )
+        manager = DockerManager("docker-compose.yml", "build")
+        with patch("services.docker_manager.subprocess.run", side_effect=error):
+            with self.assertRaises(subprocess.TimeoutExpired) as caught:
+                manager.build()
+        notes = "\n".join(caught.exception.__notes__)
+        self.assertIn("Step 5: installing GCC", notes)
+        self.assertIn("503 Service Unavailable", notes)
+        self.assertLess(len(notes), 8200)
+
 
 if __name__ == "__main__":
     unittest.main()

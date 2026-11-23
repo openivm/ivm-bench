@@ -280,7 +280,14 @@ class DockerManager:
         args = ["build"]
         if services:
             args.extend(services)
-        self._run(args, timeout=timeout)
+        try:
+            self._run(args, timeout=timeout)
+        except subprocess.TimeoutExpired as error:
+            for stream, output in (("stdout", error.stdout), ("stderr", error.stderr)):
+                if output:
+                    tail = output[-4000:].decode(errors="replace")
+                    error.add_note(f"Docker compose build {stream} (tail):\n{tail}")
+            raise
         logger.info("Build completed for %s", services or "all services")
 
     def up(
