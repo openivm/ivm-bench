@@ -1286,6 +1286,11 @@ COPY chunks; RisingWave uses bounded INSERT groups to respect parser limits.
 UUID source identities retain their canonical textual form for replay guards.
 These initial integrations accept insert-only plans and reject other mutations.
 
+The shared historical date-window model uses an equality join on day-of-month
+parity. Both parity keys contain all 28 lags, so each input row still produces
+28 output rows. Every engine uses this model. Runs before the rewrite used a
+different join shape for this model.
+
 Refresh completion uses strict-serializable reads of every Materialize output
 or a RisingWave FLUSH followed by output reads. Source insertion, MV creation
 and completion fences are measured; row counts and independent validation are

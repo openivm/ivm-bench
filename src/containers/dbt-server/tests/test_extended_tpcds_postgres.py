@@ -43,23 +43,34 @@ class PostgresWorkloadTests(unittest.TestCase):
             self.assertEqual(result['status'], 'failed')
             self.assertEqual(result['differences'], {'sample': 1})
 
-    def test_risingwave_date_lag_expansion_preserves_rows_and_multiplicity(self):
+    def test_report_window_equality_join_preserves_cross_join_multiplicity(self):
         from services.extended_tpcds import pipeline
+        from services.extended_tpcds_sql import translate
+        from services.extended_tpcds_streaming import render as render_streaming
+
         query = pipeline.render_model('int_hist_report_window_dates', {
             'report_date': '2002-12-31', 'history_months': 12,
         })
-        sql = pg.render(query, 'risingwave')
-        self.assertIn('UNNEST(ARRAY[', sql)
-        self.assertNotIn('CROSS JOIN', sql)
-        self.assertIn('CROSS JOIN', pg.render(query, 'materialize-emulator'))
+        oracle = """SELECT report_as_of_date, n,
+                           report_as_of_date + INTERVAL (-n) DAY
+                    FROM int_hist_date_spine CROSS JOIN range(28) AS lag(n)"""
+        queries = {'duckdb': query, 'dbspnet': render_streaming(query, 'dbspnet'),
+                   'feldera': render_streaming(query, 'feldera').replace('SAFE_CAST(', 'TRY_CAST('),
+                   'spark': pg.sqlglot.transpile(translate(query), read='spark', write='duckdb')[0]}
+        queries.update({engine: pg.render(query, engine) for engine in pg.ENGINES})
+
         with duckdb.connect() as db:
             db.execute("""CREATE TABLE int_hist_date_spine AS SELECT * FROM
                         (VALUES (DATE '2000-03-01'), (DATE '2000-03-01'),
-                                (DATE '2002-01-01'), (NULL)) AS d(report_as_of_date)""")
-            expected = db.execute(query).fetchall()
-            actual = db.execute(sql).fetchall()
-            self.assertEqual(len(actual), 4 * 28)
-            self.assertCountEqual(actual, expected)
+                                (DATE '2000-03-02'), (NULL)) AS d(report_as_of_date)""")
+            db.execute('CREATE TABLE __xt_unit AS SELECT 1 AS one')
+            expected = db.execute(oracle).fetchall()
+            self.assertEqual(len(expected), 4 * 28)
+            for engine, sql in queries.items():
+                with self.subTest(engine=engine):
+                    join, = pg.sqlglot.parse_one(sql, read='duckdb').find_all(pg.exp.Join)
+                    self.assertIsInstance(join.args['on'], pg.exp.EQ)
+                    self.assertCountEqual(db.execute(sql).fetchall(), expected)
 
     def test_all_96_models_render_without_dropping_safe_casts_or_null_semantics(self):
         from services.extended_tpcds import pipeline
