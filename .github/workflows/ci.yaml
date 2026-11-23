@@ -181,13 +181,11 @@ jobs:
         with:
           clean: true
 
-      - name: "Build pinned RisingWave image"
-        run: bash src/containers/risingwave/build-pinned-image.sh
-
       - name: "🧪 Run storage collector unit tests"
         run: bash tools/scripts/github/run-unit-tests.sh
 
       - name: "🧬 Resolve experiments file"
+        id: experiments
         env:
           INPUT_EXPERIMENTS_FILE: ${{ inputs.experiments_file || '' }}
           INPUT_EXPERIMENTS_ENGINES: ${{ inputs.experiments_engines || '' }}
@@ -275,6 +273,12 @@ jobs:
             cat "$EXP_FILE"
           fi
           echo "BENCHMARK_EXPERIMENTS_FILE=$EXP_FILE" >> "$GITHUB_ENV"
+          needs_risingwave="$(.runtime/ci-tests/bin/python tools/scripts/github/experiment-needs-engine.py "$EXP_FILE" risingwave)"
+          echo "needs_risingwave=$needs_risingwave" >> "$GITHUB_OUTPUT"
+
+      - name: "Build pinned RisingWave image"
+        if: steps.experiments.outputs.needs_risingwave == 'true'
+        run: bash src/containers/risingwave/build-pinned-image.sh
 
       - name: "🔐 Write .env from BASE64_ENV secret"
         env:
