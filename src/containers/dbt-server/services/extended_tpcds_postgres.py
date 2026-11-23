@@ -98,11 +98,43 @@ def compact_date(value, engine, *, strict=False):
             f"THEN CAST(({shifted}) AS DATE) END END")
 
 
+def lower_report_lag_cross_join(tree):
+    """Expand the report date spine by the exact lag list from the workload."""
+    if not isinstance(tree, exp.Select):
+        return
+    source = tree.args.get('from_')
+    joins = tree.args.get('joins') or []
+    if not source or not isinstance(source.this, exp.Table) or source.this.name != 'int_hist_date_spine':
+        return
+    if len(joins) != 1 or joins[0].kind != 'CROSS' or not isinstance(joins[0].this, exp.Values):
+        return
+    values = joins[0].this
+    if values.alias_column_names != ['n'] or not values.alias or not values.expressions:
+        return
+    lag_values = []
+    for row in values.expressions:
+        if len(row.expressions) != 1 or not row.expressions[0].is_int:
+            return
+        lag_values.append(row.expressions[0].copy())
+    # A set-returning projection produces one row per array element for
+    # every input row, preserving duplicates and the original lag values.
+    expansion = exp.Unnest(expressions=[exp.Array(expressions=lag_values)])
+    source_alias = source.this.alias_or_name
+    columns = list(tree.find_all(exp.Column))
+    expanded = exp.select('*', exp.alias_(expansion, 'n')).from_(source.this.copy())
+    source.set('this', expanded.subquery(source_alias))
+    tree.set('joins', [])
+    for column in columns:
+        if column.table == values.alias and column.name == 'n':
+            column.set('table', exp.to_identifier(source_alias))
+
+
 def render(query, engine):
     from services.extended_tpcds_streaming import lower_first_value_nulls
     tree = sqlglot.parse_one(query, read='duckdb')
     lower_first_value_nulls(tree, engine)
     if engine == 'risingwave':
+        lower_report_lag_cross_join(tree)
         # The all-cohort predicate makes the membership branch unreachable.
         # Fold it before the streaming planner tries to bind the subquery.
         for predicate in tree.find_all(exp.Where):
@@ -312,7 +344,9 @@ def validate_batch(engine,batch_num,manifest_path,work_dir,options):
         cursor.execute('SET search_path = '+ident(state['schema']))
         for name in pipeline.selected_models():
             columns=reference.execute('DESCRIBE '+ident(name)).fetchall()
-            arrow_schema=reference.execute('SELECT * FROM '+ident(name)+' LIMIT 0').fetch_arrow_table().schema
+            # DuckDB 2.0 removed Arrow export from execute() results. The
+            # relational API retains this alias on DuckDB 1.x and 2.x.
+            arrow_schema=reference.table(name).limit(0).fetch_arrow_table().schema
             reference.execute('CREATE OR REPLACE TABLE xt_actual AS SELECT * FROM '+ident(name)+' WHERE false')
             cursor.execute('SELECT * FROM '+ident(name))
             if len(cursor.description)!=len(columns):raise ValueError('output schema width differs: '+name)

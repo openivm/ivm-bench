@@ -18,6 +18,49 @@ from services import extended_tpcds_postgres as pg
 
 
 class PostgresWorkloadTests(unittest.TestCase):
+    def test_validation_detects_a_missing_duplicate_using_duckdb_arrow_schema(self):
+        from services.extended_tpcds import mutations, pipeline
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            manifest = root / 'manifest.json'
+            manifest.write_text(json.dumps({'plan_id': 'test', 'batches': []}))
+            (root / 'pg-checkpoint.json').write_text(json.dumps({
+                'dirty': False, 'batch_num': 1, 'plan_id': 'test', 'schema': 'xt_test',
+            }))
+            connection = Mock()
+            cursor = connection.cursor.return_value.__enter__.return_value
+            cursor.description = [('value',)]
+            cursor.fetchmany.side_effect = [[(1,), (None,)], []]
+
+            def build_reference(reference, **_):
+                reference.execute('CREATE TABLE sample AS SELECT * FROM (VALUES (1), (1), (NULL)) AS t(value)')
+
+            with patch.object(pg, 'connect') as connect, patch.object(mutations, 'load_initial'), \
+                 patch.object(pipeline, 'build', side_effect=build_reference), \
+                 patch.object(pipeline, 'selected_models', return_value=['sample']):
+                connect.return_value.__enter__.return_value = connection
+                result = pg.validate_batch('materialize-emulator', 1, manifest, root, {'query_cohort': 'all'})
+            self.assertEqual(result['status'], 'failed')
+            self.assertEqual(result['differences'], {'sample': 1})
+
+    def test_risingwave_date_lag_expansion_preserves_rows_and_multiplicity(self):
+        from services.extended_tpcds import pipeline
+        query = pipeline.render_model('int_hist_report_window_dates', {
+            'report_date': '2002-12-31', 'history_months': 12,
+        })
+        sql = pg.render(query, 'risingwave')
+        self.assertIn('UNNEST(ARRAY[', sql)
+        self.assertNotIn('CROSS JOIN', sql)
+        self.assertIn('CROSS JOIN', pg.render(query, 'materialize-emulator'))
+        with duckdb.connect() as db:
+            db.execute("""CREATE TABLE int_hist_date_spine AS SELECT * FROM
+                        (VALUES (DATE '2000-03-01'), (DATE '2000-03-01'),
+                                (DATE '2002-01-01'), (NULL)) AS d(report_as_of_date)""")
+            expected = db.execute(query).fetchall()
+            actual = db.execute(sql).fetchall()
+            self.assertEqual(len(actual), 4 * 28)
+            self.assertCountEqual(actual, expected)
+
     def test_all_96_models_render_without_dropping_safe_casts_or_null_semantics(self):
         from services.extended_tpcds import pipeline
         for engine in pg.ENGINES:
