@@ -17,7 +17,7 @@
 #    1. openivm-builder    — builds the pinned DuckDB 2.0 CLI and extension.
 #    2. spark-ext-builder  — JDK 17 + sbt; clones openivm-spark @ pinned
 #                            SHA and runs `sbt ivmExtension/assembly`.
-#    3. final              — Ubuntu 24.04 runtime; aggregates all three
+#    3. final              — Ubuntu 22.04 runtime; aggregates all three
 #                            artifacts at /opt/spark-openivm/. entrypoint
 #                            copies them to ${OUTPUT_DIR:-/output}/.
 #
@@ -35,40 +35,13 @@
 # the `duckdb` CLI and dlopens `openivm.duckdb_extension`); a 24.04-built binary
 # fails on 22.04 with `GLIBC_2.38 not found` / `GLIBCXX_3.4.32 not found`, which
 # crashes every per-view compile -> COMPILE_FAILED -> FULL_REFRESH for all views.
-# Use GCC 13 on Ubuntu 22.04, matching the benchmark's native OpenIVM builder.
+# Reuse the GCC 13 toolchain built by the DuckDB OpenIVM builder.
 # Keep libstdc++ DYNAMIC (no -static-libstdc++): the CLI and the loadable
 # extension must share a single libstdc++.
-FROM ubuntu:22.04 AS openivm-builder
-
-ARG UBUNTU_MIRROR=http://archive.ubuntu.com/ubuntu
-
-ENV DEBIAN_FRONTEND=noninteractive
-
-RUN printf 'Acquire::Retries "5";\nAcquire::ForceIPv4 "true";\nAcquire::http::Timeout "30";\nAcquire::https::Timeout "30";\n' > /etc/apt/apt.conf.d/80-download-retries
-
-RUN if [ "${UBUNTU_MIRROR}" != "http://archive.ubuntu.com/ubuntu" ]; then \
-        if [ -f /etc/apt/sources.list ]; then \
-            sed -i "s|http://archive.ubuntu.com/ubuntu|${UBUNTU_MIRROR}|g; s|http://security.ubuntu.com/ubuntu|${UBUNTU_MIRROR}|g" /etc/apt/sources.list; \
-        fi; \
-        if [ -f /etc/apt/sources.list.d/ubuntu.sources ]; then \
-            sed -i "s|http://archive.ubuntu.com/ubuntu|${UBUNTU_MIRROR}|g; s|http://security.ubuntu.com/ubuntu|${UBUNTU_MIRROR}|g" /etc/apt/sources.list.d/ubuntu.sources; \
-        fi; \
-    fi && \
-    apt-get update -o Acquire::ForceIPv4=true -o Acquire::Retries=3 -o Acquire::http::Timeout=60 && \
-    apt-get install -y --no-install-recommends \
-        build-essential cmake ninja-build git ca-certificates \
-        python3 python3-pip libssl-dev pkg-config zip unzip curl \
-        software-properties-common gpg-agent && \
-    add-apt-repository -y ppa:ubuntu-toolchain-r/test && \
-    apt-get update -o Acquire::ForceIPv4=true -o Acquire::Retries=3 -o Acquire::http::Timeout=60 && \
-    apt-get install -y --no-install-recommends gcc-13 g++-13 && \
-    update-alternatives --install /usr/bin/gcc gcc /usr/bin/gcc-13 100 && \
-    update-alternatives --install /usr/bin/g++ g++ /usr/bin/g++-13 100 && \
-    rm -rf /var/lib/apt/lists/*
+FROM duckdb-openivm-toolchain:ubuntu22.04-gcc13 AS openivm-builder
 
 WORKDIR /src
 
-# Declare the source pins after the package install so pin bumps reuse the toolchain layer.
 ARG OPENIVM_REPO=https://github.com/ila/openivm.git
 ARG OPENIVM_COMMIT=9c6826754303ced58a46466434facfb58f87b52d
 
@@ -169,7 +142,7 @@ FROM ubuntu:22.04
 ARG OPENIVM_SPARK_COMMIT=2d4c0a00c9c9f2887e5719ed1f85aa410eb54d8b
 LABEL org.openivm.spark.commit="${OPENIVM_SPARK_COMMIT}"
 
-# Cache-bust key: hash of the Dockerfile and any optional local patches. The orchestrator
+# Cache-bust key: hash of the Dockerfile, toolchain image and any optional patches. The orchestrator
 # reuses this builder image only when the label still matches.
 ARG SPARK_OPENIVM_DOCKERFILE_HASH=""
 LABEL org.openivm.spark.dockerfile_hash="${SPARK_OPENIVM_DOCKERFILE_HASH}"

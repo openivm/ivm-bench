@@ -38,3 +38,14 @@ needs its name as a custom GitHub Actions label, including after re-registration
 
 Use `schedule=parallel` for parallel engine execution. Experiment files still
 accept the legacy `parallel` setting.
+
+## Build the Spark and Fabric image locally
+
+The benchmark harness reuses the tagged Ubuntu 22.04/GCC 13 toolchain image for
+DuckDB and Spark/Fabric, and builds it on a fresh machine. To build the
+Spark/Fabric image directly with Docker Compose, prepare the same toolchain first.
+
+```bash
+docker compose -f docker/docker-compose.duckdb-openivm-build.yml build duckdb-openivm-toolchain
+docker compose -f docker/docker-compose.spark-openivm-build.yml build
+```
