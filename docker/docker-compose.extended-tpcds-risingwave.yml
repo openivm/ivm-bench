@@ -1,0 +1,9 @@
+services:
+  risingwave:
+    # Use the pinned engine's six-hour default for Fabric-DS backfills that
+    # outlive the base benchmark's 30-minute SST commit watermark.
+    entrypoint: ["/bin/bash", "-ec"]
+    command:
+      - |
+        sed 's/^min_sst_retention_time_sec = .*/min_sst_retention_time_sec = 21600/' /risingwave.toml > /tmp/risingwave-fabric-ds.toml
+        exec /risingwave/bin/risingwave single_node --config-path /tmp/risingwave-fabric-ds.toml

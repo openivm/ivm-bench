@@ -1285,6 +1285,9 @@ there is no model-table fallback. Initial Materialize ingestion uses bounded
 COPY chunks; RisingWave uses bounded INSERT groups to respect parser limits.
 UUID source identities retain their canonical textual form for replay guards.
 These initial integrations accept insert-only plans and reject other mutations.
+RisingWave uses a six-hour minimum SST retention window for Fabric-DS so
+backfill objects can still commit when initialization exceeds the base
+configuration's 30-minute watermark. Older SSTs can occupy disk for longer.
 
 The shared historical date-window model uses an equality join on day-of-month
 parity. Both parity keys contain all 28 lags, so each input row still produces

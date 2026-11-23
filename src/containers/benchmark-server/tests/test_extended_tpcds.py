@@ -37,19 +37,27 @@ class ExtendedTPCDSConfigTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError,'must be a boolean'):
             SparkTunables(refresh_adaptive_broadcast='false')
 
-    def test_dbsp_spill_overlay_applies_only_to_extended_workload_and_reaches_compose(self):
+    def test_fabric_ds_engine_overlays_reach_compose(self):
         from services.resource_calc import compute_engine_configs
+
+        repo = Path(__file__).parents[4]
+        for workload in ('standard', 'databricks', 'extended-tpcds'):
+            for name in ('dbspnet', 'risingwave'):
+                with self.subTest(workload=workload, engine=name):
+                    config = BenchmarkConfig(workload=workload, scale_factor=100, engines=[name],
+                                             repo_dir=str(repo), host_cores=32, host_memory_gb=251)
+                    engine = compute_engine_configs(config)[name]
+                    path = f'docker/docker-compose.extended-tpcds-{name}.yml'
+                    expected = [path] if workload == 'extended-tpcds' else []
+                    self.assertEqual(engine.compose_overrides, expected)
+                    with patch('services.engine_runner.DockerManager') as manager:
+                        EngineRunner(config, engine, lambda _: None)
+                    self.assertEqual(manager.call_args_list[0].kwargs['extra_compose_files'],
+                                     [str(repo / file) for file in expected])
+
+    def test_dbsp_spill_overlay_settings(self):
         import yaml
-        repo=Path(__file__).parents[4]
-        for workload in ('standard','extended-tpcds'):
-            config=BenchmarkConfig(workload=workload,scale_factor=100,engines=['dbspnet'],
-                                   repo_dir=str(repo),host_cores=32,host_memory_gb=251)
-            engine=compute_engine_configs(config)['dbspnet']
-            expected=['docker/docker-compose.extended-tpcds-dbspnet.yml'] if workload=='extended-tpcds' else []
-            self.assertEqual(engine.compose_overrides,expected)
-            with patch('services.engine_runner.DockerManager') as manager:
-                EngineRunner(config,engine,lambda _:None)
-            self.assertEqual(manager.call_args_list[0].kwargs['extra_compose_files'],[str(repo/p) for p in expected])
+        repo = Path(__file__).parents[4]
         overlay=yaml.safe_load((repo/'docker/docker-compose.extended-tpcds-dbspnet.yml').read_text())
         settings=overlay['services']['dbspnet-server']
         self.assertEqual(settings['environment']['DBSPNET_WORKERS'],'12')
