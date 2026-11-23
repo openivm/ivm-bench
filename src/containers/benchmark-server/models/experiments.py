@@ -48,6 +48,7 @@ from models.refresh import refresh_batch_count, refresh_env, validate_refresh
 class FeatureFlags:
     openivm_validate: bool = False
     openivm_profile_refresh: bool = True
+    openivm_capture_sql: bool = False
     openivm_query_log: bool = True
     storage_metrics: bool = True
     preserve_raw: bool = False  # no-op inside OAT mode (per-experiment cleanup)
@@ -77,6 +78,7 @@ class FeatureFlags:
             openivm_profile_refresh=flag(
                 "OPENIVM_PROFILE_REFRESH", defaults.openivm_profile_refresh
             ),
+            openivm_capture_sql=flag("OPENIVM_CAPTURE_SQL", defaults.openivm_capture_sql),
             openivm_query_log=flag("OPENIVM_QUERY_LOG", defaults.openivm_query_log),
             storage_metrics=flag("STORAGE_METRICS", defaults.storage_metrics),
             preserve_raw=flag("PRESERVE_RAW", defaults.preserve_raw),
@@ -91,6 +93,7 @@ class FeatureFlags:
         return {
             "OPENIVM_VALIDATE": "1" if self.openivm_validate else "0",
             "OPENIVM_PROFILE_REFRESH": "1" if self.openivm_profile_refresh else "0",
+            "OPENIVM_CAPTURE_SQL": "1" if self.openivm_capture_sql else "0",
             "OPENIVM_QUERY_LOG": "1" if self.openivm_query_log else "0",
             "STORAGE_METRICS": "1" if self.storage_metrics else "0",
             "PRESERVE_RAW": "1" if self.preserve_raw else "0",
@@ -448,6 +451,7 @@ class ExperimentInputs:
         ff = FeatureFlags(
             openivm_validate=_flag(ff_d.get("openivm_validate"), base.feature_flags.openivm_validate),
             openivm_profile_refresh=_flag(ff_d.get("openivm_profile_refresh"), base.feature_flags.openivm_profile_refresh),
+            openivm_capture_sql=_flag(ff_d.get("openivm_capture_sql"), base.feature_flags.openivm_capture_sql),
             openivm_query_log=_flag(ff_d.get("openivm_query_log"), base.feature_flags.openivm_query_log),
             storage_metrics=_flag(ff_d.get("storage_metrics"), base.feature_flags.storage_metrics),
             preserve_raw=_flag(ff_d.get("preserve_raw"), base.feature_flags.preserve_raw),
