@@ -3,8 +3,8 @@ WITH engagement_reported_units_silver AS (
     silver.engagement_path,
     silver.customer_path,
     silver.engagement_reported_units,
-    NULL AS customer_reported_capacity,
-    NULL AS receipt_reported_units
+    CAST(NULL AS BIGINT) AS customer_reported_capacity,
+    CAST(NULL AS INT) AS receipt_reported_units
   FROM int_engagement_observation_latest AS silver
 ), receipt_reported_units_latest AS (
   SELECT
@@ -19,7 +19,7 @@ WITH engagement_reported_units_silver AS (
     customer_path,
     engagement_reported_units,
     customer_reported_capacity,
-    NULL AS receipt_reported_units
+    CAST(NULL AS INT) AS receipt_reported_units
   FROM int_engagement_primary_units
   UNION
   SELECT
@@ -27,14 +27,14 @@ WITH engagement_reported_units_silver AS (
     customer_path,
     engagement_reported_units,
     customer_reported_capacity,
-    NULL AS receipt_reported_units
+    CAST(NULL AS INT) AS receipt_reported_units
   FROM engagement_reported_units_silver
   UNION
   SELECT
     engagement_path,
     customer_path,
-    NULL AS engagement_reported_units,
-    NULL AS customer_reported_capacity,
+    CAST(NULL AS BIGINT) AS engagement_reported_units,
+    CAST(NULL AS BIGINT) AS customer_reported_capacity,
     receipt_reported_units
   FROM receipt_reported_units_latest
 ), dedup AS (

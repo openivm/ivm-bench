@@ -31,8 +31,21 @@ class PostgresWorkloadTests(unittest.TestCase):
             self.assertTrue(all('INTERVAL DAY' not in sql and 'INTERVAL MONTH' not in sql
                                 for sql in queries.values()))
             self.assertTrue(all('TO_TIMESTAMP(' not in sql.upper() for sql in queries.values()))
+            effective_units = queries['int_engagement_effective_units']
+            self.assertIn('CAST(NULL AS INT) AS "receipt_reported_units"', effective_units)
+            self.assertIn('CAST(NULL AS BIGINT) AS "customer_reported_capacity"', effective_units)
             self.assertNotIn('IGNORE NULLS',queries['int_channel_status_latest'])
             self.assertIn('IS NULL',queries['int_channel_status_latest'])
+
+    def test_risingwave_prunes_only_the_inactive_cohort_membership(self):
+        from services.extended_tpcds import pipeline
+        config = {'report_date': '2002-12-31', 'history_months': 12}
+        for cohort in ('all', 'hot', 'cold'):
+            query = pipeline.render_model('int_target_engagements', config, cohort)
+            sql = pg.render(query, 'risingwave')
+            membership = [expr for expr in pg.sqlglot.parse_one(sql, read='postgres').find_all(pg.exp.In)
+                          if expr.args.get('query')]
+            self.assertEqual(len(membership), 0 if cohort == 'all' else 1)
 
     def test_window_rewrite_preserves_nulls_duplicates_and_whole_partition_results(self):
         source='SELECT k,t,v,FIRST_VALUE(v IGNORE NULLS) OVER (PARTITION BY k ORDER BY t ROWS BETWEEN UNBOUNDED PRECEDING AND UNBOUNDED FOLLOWING) AS first FROM input'

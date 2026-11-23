@@ -17,6 +17,7 @@ from psycopg2.extras import execute_values
 import sqlglot
 from sqlglot import exp
 from sqlglot.dialects.postgres import Postgres
+from sqlglot.optimizer.simplify import simplify
 from sql_catalog import load_sql
 
 ENGINES = ('materialize-emulator', 'risingwave')
@@ -102,6 +103,10 @@ def render(query, engine):
     tree = sqlglot.parse_one(query, read='duckdb')
     lower_first_value_nulls(tree, engine)
     if engine == 'risingwave':
+        # The all-cohort predicate makes the membership branch unreachable.
+        # Fold it before the streaming planner tries to bind the subquery.
+        for predicate in tree.find_all(exp.Where):
+            predicate.set('this', simplify(predicate.this))
         for window in tree.find_all(exp.Window):
             if window.args.get('over') and not window.args.get('partition_by') and not window.args.get('alias'):
                 # A typed constant represents one partition of all the rows.
