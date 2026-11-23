@@ -2,7 +2,7 @@ WITH engagement_reported_units_silver AS (
   SELECT
     silver.engagement_path,
     silver.customer_path,
-    silver.engagement_reported_units,
+    CAST(silver.engagement_reported_units AS BIGINT) AS engagement_reported_units,
     CAST(NULL AS BIGINT) AS customer_reported_capacity,
     CAST(NULL AS INT) AS receipt_reported_units
   FROM int_engagement_observation_latest AS silver

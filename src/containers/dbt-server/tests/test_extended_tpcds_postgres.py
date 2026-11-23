@@ -91,6 +91,35 @@ class PostgresWorkloadTests(unittest.TestCase):
             self.assertNotIn('IGNORE NULLS',queries['int_channel_status_latest'])
             self.assertIn('IS NULL',queries['int_channel_status_latest'])
 
+    def test_effective_units_union_uses_consistent_input_types(self):
+        from services.extended_tpcds import pipeline
+
+        query = pipeline.render_model('int_engagement_effective_units', {
+            'report_date': '2002-12-31', 'history_months': 12,
+        })
+        with duckdb.connect() as db:
+            db.execute("""
+                CREATE TABLE int_engagement_observation_latest
+                    (engagement_path VARCHAR, customer_path VARCHAR, engagement_reported_units INT);
+                CREATE TABLE int_engagement_primary_units
+                    (engagement_path VARCHAR, customer_path VARCHAR,
+                     engagement_reported_units BIGINT, customer_reported_capacity BIGINT);
+                CREATE TABLE int_engagement_receipt_latest
+                    (receipt_time TIMESTAMP, engagement_path VARCHAR,
+                     customer_path VARCHAR, receipt_reported_units INT);
+            """)
+            for engine in pg.ENGINES:
+                with self.subTest(engine=engine):
+                    rendered = pg.sqlglot.parse_one(pg.render(query, engine), read='postgres')
+                    silver, receipt, union = rendered.ctes[:3]
+                    ctes = pg.exp.With(expressions=[silver.copy(), receipt.copy()])
+                    for arm in union.find_all(pg.exp.Select):
+                        sql = arm.copy()
+                        sql.set('with_', ctes.copy())
+                        fields = db.execute(f"DESCRIBE {sql.sql(dialect='duckdb')}").fetchall()
+                        self.assertEqual([row[1] for row in fields],
+                                         ['VARCHAR', 'VARCHAR', 'BIGINT', 'BIGINT', 'INTEGER'])
+
     def test_risingwave_prunes_only_the_inactive_cohort_membership(self):
         from services.extended_tpcds import pipeline
         config = {'report_date': '2002-12-31', 'history_months': 12}
