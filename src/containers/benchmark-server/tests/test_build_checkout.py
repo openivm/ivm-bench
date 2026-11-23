@@ -13,8 +13,9 @@ from unittest.mock import patch
 BENCHMARK_SERVER = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(BENCHMARK_SERVER))
 
+from models.config import BenchmarkConfig
 from services.docker_manager import DockerManager
-from services.orchestrator import _spark_builder_source_hash
+from services.orchestrator import Orchestrator, _spark_builder_source_hash
 
 
 class BuildCheckoutTest(unittest.TestCase):
@@ -25,17 +26,31 @@ class BuildCheckoutTest(unittest.TestCase):
             patches = root / "patches"
             patch_file = patches / "compiler.patch"
             dockerfile.write_text("FROM scratch\n")
-            no_patch = _spark_builder_source_hash(str(dockerfile))
+            toolchain_id = "sha256:compiler"
+            no_patch = _spark_builder_source_hash(str(dockerfile), toolchain_id)
+            self.assertNotEqual(no_patch, _spark_builder_source_hash(str(dockerfile), "sha256:updated"))
             patches.mkdir()
             patch_file.write_text("first revision\n")
-            first = _spark_builder_source_hash(str(dockerfile))
+            first = _spark_builder_source_hash(str(dockerfile), toolchain_id)
             self.assertNotEqual(no_patch, first)
             patch_file.write_text("second revision\n")
-            self.assertNotEqual(first, _spark_builder_source_hash(str(dockerfile)))
+            self.assertNotEqual(first, _spark_builder_source_hash(str(dockerfile), toolchain_id))
             patch_file.write_text("first revision\n")
-            self.assertEqual(first, _spark_builder_source_hash(str(dockerfile)))
+            self.assertEqual(first, _spark_builder_source_hash(str(dockerfile), toolchain_id))
             dockerfile.write_text("FROM busybox\n")
-            self.assertNotEqual(first, _spark_builder_source_hash(str(dockerfile)))
+            self.assertNotEqual(first, _spark_builder_source_hash(str(dockerfile), toolchain_id))
+
+    def test_openivm_toolchain_is_built_only_when_the_image_is_missing(self):
+        existing = subprocess.CompletedProcess([], 0, "sha256:compiler\n", "")
+        missing = subprocess.CompletedProcess([], 1, "", "No such image")
+        orchestrator = Orchestrator(BenchmarkConfig())
+        with patch("services.orchestrator.DockerManager") as manager, patch(
+            "services.orchestrator.subprocess.run", side_effect=[missing, existing, existing]
+        ):
+            self.assertEqual(orchestrator._openivm_toolchain_id(), "sha256:compiler")
+            self.assertEqual(orchestrator._openivm_toolchain_id(), "sha256:compiler")
+        manager.return_value.build.assert_called_once_with(services=["duckdb-openivm-toolchain"])
+
     def test_published_port_accepts_ipv4_and_ipv6_bindings(self):
         manager = DockerManager("docker-compose.yml")
         with patch.object(

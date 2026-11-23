@@ -27,3 +27,14 @@ Alternatively, feed the URL file to `gh secret set` via stdin. Renew the secret
 before it expires; the router cannot renew it. Other cloud credentials stay in
 `BASE64_ENV`; the temporary URL is injected separately and takes precedence over
 `.env`. See [CI inputs and experiment presets](CI_VS_GCI.md) for larger runs.
+
+## Build the Spark and Fabric image locally
+
+The benchmark harness reuses the tagged Ubuntu 22.04/GCC 13 toolchain image for
+DuckDB and Spark/Fabric, and builds it on a fresh machine. To build the
+Spark/Fabric image directly with Docker Compose, prepare the same toolchain first.
+
+```bash
+docker compose -f docker/docker-compose.duckdb-openivm-build.yml build duckdb-openivm-toolchain
+docker compose -f docker/docker-compose.spark-openivm-build.yml build
+```
