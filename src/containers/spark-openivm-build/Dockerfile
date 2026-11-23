@@ -41,8 +41,6 @@
 FROM ubuntu:22.04 AS openivm-builder
 
 ARG UBUNTU_MIRROR=http://archive.ubuntu.com/ubuntu
-ARG OPENIVM_REPO=https://github.com/ila/openivm.git
-ARG OPENIVM_COMMIT=a7fc36a680303abdba2026da53f255def87b0be0
 
 ENV DEBIAN_FRONTEND=noninteractive
 
@@ -69,6 +67,10 @@ RUN if [ "${UBUNTU_MIRROR}" != "http://archive.ubuntu.com/ubuntu" ]; then \
     rm -rf /var/lib/apt/lists/*
 
 WORKDIR /src
+
+# Declare the source pins after the package install so pin bumps reuse the toolchain layer.
+ARG OPENIVM_REPO=https://github.com/ila/openivm.git
+ARG OPENIVM_COMMIT=9c6826754303ced58a46466434facfb58f87b52d
 
 # The OpenIVM revision pins matching DuckDB 2.0 and LPTS submodules.
 RUN git init -q && \
