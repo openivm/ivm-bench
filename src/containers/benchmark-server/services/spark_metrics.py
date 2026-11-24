@@ -23,6 +23,7 @@ can be re-run against captured logs without re-running the benchmark.
 
 from __future__ import annotations
 
+import gzip
 import json
 import logging
 import os
@@ -315,7 +316,7 @@ def parse_app_events(files: List[str]) -> Dict[str, Any]:
 # ---------------------------------------------------------------------------
 
 def read_batch_windows(
-    db_path: str, benchmark_id: str, engine: str
+    db_path: str, benchmark_id: str, engine: str, *, extended: bool = False
 ) -> Dict[int, Tuple[float, float]]:
     """Read per-batch wall-clock windows from benchmark-server's SQLite.
 
@@ -338,13 +339,14 @@ def read_batch_windows(
     except sqlite3.Error as e:
         logger.warning("[spark-metrics] batch-window read failed: %s", e)
         return windows
+    prefix = "profile" if extended else "wall"
     for r in rows:
         try:
             extra = (json.loads(r["result_json"]) or {}).get("extra", {})
         except (TypeError, json.JSONDecodeError):
             extra = {}
-        start = extra.get("wall_window_start_ms")
-        end = extra.get("wall_window_end_ms")
+        start = extra.get(f"{prefix}_window_start_ms")
+        end = extra.get(f"{prefix}_window_end_ms")
         if start is not None and end is not None:
             windows[int(r["batch_num"])] = (float(start), float(end))
     return windows
@@ -410,7 +412,7 @@ def build_engine_rows(
             for mname, mval in merged.items():
                 long_rows.append({
                     "engine": engine, "sf": sf, "run_id": run_id, "batch": batch,
-                    "dbt_model": model, "execution_id": eid, "job_id": job_id,
+                    "app_id": app_id, "dbt_model": model, "execution_id": eid, "job_id": job_id,
                     "stage_id": sid, "task_id": t["task_id"],
                     "metric_name": mname, "metric_value": float(mval),
                     "event_ts": finish_ms,
@@ -434,7 +436,7 @@ def build_engine_rows(
             ):
                 long_rows.append({
                     "engine": engine, "sf": sf, "run_id": run_id, "batch": batch,
-                    "dbt_model": model, "execution_id": eid, "job_id": None,
+                    "app_id": app_id, "dbt_model": model, "execution_id": eid, "job_id": None,
                     "stage_id": sid, "task_id": None,
                     "metric_name": mname, "metric_value": float(mval),
                     "event_ts": None,
@@ -460,7 +462,7 @@ def build_engine_rows(
             if files_scanned:
                 long_rows.append({
                     "engine": engine, "sf": sf, "run_id": run_id, "batch": batch,
-                    "dbt_model": model, "execution_id": eid, "job_id": None,
+                    "app_id": app_id, "dbt_model": model, "execution_id": eid, "job_id": None,
                     "stage_id": None, "task_id": None,
                     "metric_name": "files_scanned", "metric_value": files_scanned,
                     "event_ts": start,
@@ -800,6 +802,8 @@ def process(
     run_id: str,
     engines: Optional[Iterable[str]] = None,
     emit: Callable[[str], None] = logger.info,
+    *,
+    extended_profile: bool = False,
 ) -> Dict[str, Any]:
     """Parse event logs for both engines and emit all artifacts.
 
@@ -837,6 +841,13 @@ def process(
         with open(exec_path, "w", encoding="utf-8") as f:
             for row in exec_rows:
                 f.write(json.dumps(row) + "\n")
+        if extended_profile:
+            try:
+                profile_windows = read_batch_windows(db_path, benchmark_id, engine, extended=True)
+                _write_extended_profile(processed_dir, engine, events_root, exec_rows, windows, profile_windows)
+            except OSError as exc:
+                emit(f"[spark-metrics] {engine}: extended profile export failed: {exc}")
+
         mapped = sum(1 for r in exec_rows if r.get("dbt_model"))
         emit(
             f"[spark-metrics] {engine}: {n_apps} app(s), {n_execs} executions "
@@ -885,6 +896,51 @@ def process(
         f"models={len(by_model_rows)} → {processed_dir}"
     )
     return summary
+
+
+def _write_extended_profile(processed_dir, engine, events_root, executions, timed, profile):
+    """Preserve plans and stage accumulators alongside the task-level Parquet."""
+    os.makedirs(processed_dir, exist_ok=True)
+    prefix = os.path.join(processed_dir, f"{engine}-")
+    _atomic_write(prefix + "profile-windows.json", json.dumps({"timed": timed, "profile": profile}) + "\n")
+    with gzip.open(prefix + "executions.jsonl.gz", "wt", encoding="utf-8") as out:
+        for row in executions:
+            start = row["start_ms"]
+            batch = _batch_for_ts(start, profile) if start else None
+            phase = "outside_batch"
+            if row["batch"] is not None:
+                phase = "timed"
+            elif batch is not None:
+                start_timed = timed.get(batch, (float("inf"), None))[0]
+                phase = "setup" if start < start_timed else "post_batch"
+            out.write(json.dumps({**row, "profile_batch": batch, "phase": phase}) + "\n")
+
+    # Avoid persisting Spark environment/configuration events or JobStart properties.
+    fields = {
+        "SparkListenerSQLExecutionStart": ("executionId", "rootExecutionId", "time", "physicalPlanDescription", "sparkPlanInfo"),
+        "SparkListenerSQLAdaptiveExecutionUpdate": ("executionId", "physicalPlanDescription", "sparkPlanInfo"),
+        "SparkListenerSQLExecutionEnd": ("executionId", "time"),
+        "SparkListenerDriverAccumUpdates": ("executionId", "accumUpdates"),
+        "SparkListenerStageSubmitted": ("Stage Info",),
+        "SparkListenerStageCompleted": ("Stage Info",),
+        "SparkListenerJobStart": ("Job ID", "Submission Time", "Stage IDs"),
+        "SparkListenerJobEnd": ("Job ID", "Completion Time"),
+    }
+    with gzip.open(prefix + "plan-events.jsonl.gz", "wt", encoding="utf-8") as out:
+        for app_id, files in _iter_app_groups(events_root):
+            for path in files:
+                with open(path, encoding="utf-8", errors="replace") as source:
+                    for line in source:
+                        try:
+                            event = json.loads(line)
+                        except json.JSONDecodeError:
+                            continue
+                        kind = event.get("Event", "").rsplit(".", 1)[-1]
+                        if kind in fields:
+                            row = {k: event[k] for k in fields[kind] if k in event}
+                            if kind == "SparkListenerJobStart":
+                                row["executionId"] = (event.get("Properties") or {}).get("spark.sql.execution.id")
+                            out.write(json.dumps({"Event": kind, "app_id": app_id, **row}) + "\n")
 
 
 def _zip_processed(processed_dir: str, zip_path: str) -> None:

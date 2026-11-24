@@ -1934,6 +1934,7 @@ class Orchestrator:
             summary = spark_metrics.process(
                 repo_dir=repo, sf=sf, benchmark_id=self._benchmark_id or "",
                 run_id=run_id, engines=spark_engines, emit=self.emit,
+                extended_profile=inputs.feature_flags.extended_spark_profile,
             )
         except Exception as e:
             self.emit(f"  [spark-metrics] post-processing failed: {e}")

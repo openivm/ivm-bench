@@ -1,4 +1,5 @@
 import csv
+import gzip
 import io
 import json
 import os
@@ -22,6 +23,35 @@ from services.resource_calc import compute_engine_configs
 
 
 class RepeatedRefreshTest(unittest.TestCase):
+    def test_extended_spark_profile_includes_post_batch_without_widening_timed_window(self):
+        from services.spark_metrics import _write_extended_profile
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            events = root / "events"
+            events.mkdir()
+            with (events / "events_1_app").open("w") as event_log:
+                for event in (
+                    {"Event": "SparkListenerEnvironmentUpdate", "Spark Properties": {"secret": "omit"}},
+                    {"Event": "SparkListenerJobStart", "Job ID": 5, "Stage IDs": [2],
+                     "Properties": {"secret": "omit", "spark.sql.execution.id": "42"}},
+                ):
+                    event_log.write(json.dumps(event) + "\n")
+            _write_extended_profile(
+                tmp, "spark-openivm", str(events),
+                [{"start_ms": 15, "batch": 2}, {"start_ms": 25, "batch": None}],
+                {2: (10, 20)}, {2: (5, 30)},
+            )
+            with gzip.open(root / "spark-openivm-executions.jsonl.gz", "rt") as f:
+                rows = [json.loads(line) for line in f]
+            with gzip.open(root / "spark-openivm-plan-events.jsonl.gz", "rt") as f:
+                jobs = [json.loads(line) for line in f]
+            self.assertEqual([row["phase"] for row in rows], ["timed", "post_batch"])
+            self.assertEqual([row["profile_batch"] for row in rows], [2, 2])
+            self.assertEqual([row["batch"] for row in rows], [2, None])
+            self.assertEqual(jobs, [{"Event": "SparkListenerJobStart", "app_id": "app",
+                                     "Job ID": 5, "Stage IDs": [2], "executionId": "42"}])
+
     def test_thread_overrides_are_independent_and_do_not_leak_between_experiments(self):
         inputs = ExperimentInputs.from_dict({
             "databricks_dbt_threads": 2, "spark_tunables": {"dbt_threads": 4},

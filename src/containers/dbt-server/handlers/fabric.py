@@ -48,6 +48,11 @@ def provision():
         return jsonify({"status": "error", "error": str(e)}), 500
 
 
+@bp.route("/metrics/fabric/spark-history", methods=["POST"])
+def spark_history():
+    return jsonify(fabric.export_spark_history()), 200
+
+
 @bp.route("/environment/fabric/teardown", methods=["POST"])
 def teardown():
     try:

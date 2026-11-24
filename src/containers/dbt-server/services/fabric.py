@@ -19,6 +19,7 @@ extension + RocksDB state); this module only moves bytes and manages the
 Environment.
 """
 
+import gzip
 import json
 import logging
 import os
@@ -496,6 +497,85 @@ def provision_run(openivm: bool) -> dict:
     )
     publish = refresh_environment() if openivm else publish_empty_environment()
     return {"status": "ok", "resolved": resolved, "swept": swept["deleted"], "publish": publish}
+
+
+def export_spark_history(output: Path = Path("/data/stats/fabric-spark-history.jsonl.gz")) -> dict:
+    """Save executed SQL plans and stage metrics before the run's lakehouse is removed."""
+    output.parent.mkdir(parents=True, exist_ok=True)
+    deadline = time.monotonic() + 420
+    lakehouse = f"{_workspace_base()}/lakehouses/{_compute_lakehouse_id()}/livySessions"
+    headers = _fabric_headers()
+
+    def get(url, **params):
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise TimeoutError("Spark history export deadline reached")
+        response = _fabric_req("GET", url, headers=headers, params=params, timeout=min(60, remaining), retries=1)
+        response.raise_for_status()
+        return response.json()
+
+    counts = {"sessions": 0, "sql": 0, "jobs": 0, "stages": 0}
+    failures = []
+    with gzip.open(output.with_suffix(".tmp"), "wt", encoding="utf-8") as out:
+        def write(kind, application, rows):
+            for row in rows:
+                out.write(json.dumps({"kind": kind, "application": application, "data": row}) + "\n")
+            counts[kind] += len(rows)
+
+        continuation = {}
+        sessions = []
+        try:
+            while True:
+                page = get(lakehouse, **continuation)
+                sessions.extend(page["value"])
+                token = page.get("continuationToken")
+                if not token:
+                    break
+                if token == continuation.get("continuationToken"):
+                    raise ValueError("Repeated Fabric session continuation token")
+                continuation = {"continuationToken": token}
+        except (requests.RequestException, ValueError, KeyError, TimeoutError) as error:
+            failures.append({"kind": "sessions", "error": str(error)})
+
+        # Prefer completed sessions so their metrics include validation and teardown jobs.
+        for session in sorted(sessions, key=lambda x: not x.get("endDateTime")):
+            livy_id, app_id = session.get("livyId"), session.get("sparkApplicationId")
+            if not livy_id or not app_id:
+                continue
+            identity = {
+                k: session[k] for k in ("livyId", "sparkApplicationId", "state", "runtimeVersion",
+                                        "startDateTime", "endDateTime", "attemptNumber",
+                                        "driverMemory", "driverCores", "executorMemory", "executorCores",
+                                        "numExecutors", "queuedDuration", "runningDuration") if k in session
+            }
+            write("sessions", app_id, [identity])
+            base = f"{lakehouse}/{livy_id}/applications/{app_id}"
+            for kind in ("sql", "stages", "jobs"):
+                try:
+                    if kind == "sql":
+                        offset = 0
+                        seen = set()
+                        while True:
+                            rows = get(f"{base}/sql", details="true", planDescription="true",
+                                       offset=offset, length=100)
+                            ids = {row["id"] for row in rows}
+                            if ids & seen:
+                                raise ValueError("Repeated SQL execution IDs in Fabric history")
+                            write(kind, app_id, rows)
+                            seen.update(ids)
+                            if len(rows) < 100:
+                                break
+                            offset += len(rows)
+                    else:
+                        options = {"withSummaries": "true", "details": "false"} if kind == "stages" else {}
+                        write(kind, app_id, get(f"{base}/{kind}", **options))
+                except (requests.RequestException, ValueError, KeyError, TimeoutError) as error:
+                    failures.append({"kind": kind, "application": app_id, "error": str(error)})
+
+    output.with_suffix(".tmp").replace(output)
+    summary = {"status": "ok" if counts["sql"] and not failures else "partial", "counts": counts, "failures": failures}
+    output.with_name("fabric-spark-history-summary.json").write_text(json.dumps(summary, indent=2) + "\n")
+    return summary
 
 
 def teardown_run() -> dict:

@@ -117,7 +117,7 @@ on:
         default: "0"
         type: string
       openivm_profile_refresh:
-        description: "Export OpenIVM refresh profiling CSVs after each batch (0 or 1)"
+        description: "OpenIVM refresh profiling (0 off, 1 standard, 2 extended Spark/Fabric diagnostics)"
         default: "1"
         type: string
       openivm_query_log:
@@ -222,7 +222,8 @@ jobs:
             fi
             preserve_raw_b=$([[ "$PRESERVE_RAW" = "1" ]] && echo true || echo false)
             openivm_validate_b=$([[ "$OPENIVM_VALIDATE" = "1" ]] && echo true || echo false)
-            openivm_profile_refresh_b=$([[ "$OPENIVM_PROFILE_REFRESH" = "1" ]] && echo true || echo false)
+            openivm_profile_refresh_b=$([[ "$OPENIVM_PROFILE_REFRESH" =~ ^[12]$ ]] && echo true || echo false)
+            extended_spark_profile_b=$([[ "$OPENIVM_PROFILE_REFRESH" = "2" ]] && echo true || echo false)
             openivm_query_log_b=$([[ "$OPENIVM_QUERY_LOG" = "1" ]] && echo true || echo false)
             storage_metrics_b=$([[ "$STORAGE_METRICS" = "1" ]] && echo true || echo false)
             jq -n \
@@ -239,6 +240,7 @@ jobs:
               --arg schedule "$SCHEDULE" \
               --argjson preserve_raw "$preserve_raw_b" \
               --argjson openivm_validate "$openivm_validate_b" \
+              --argjson extended_spark_profile "$extended_spark_profile_b" \
               --argjson openivm_profile_refresh "$openivm_profile_refresh_b" \
               --argjson openivm_query_log "$openivm_query_log_b" \
               --argjson storage_metrics "$storage_metrics_b" \
@@ -251,6 +253,7 @@ jobs:
                     preserve_raw: $preserve_raw,
                     openivm_validate: $openivm_validate,
                     openivm_profile_refresh: $openivm_profile_refresh,
+                    extended_spark_profile: $extended_spark_profile,
                     openivm_query_log: $openivm_query_log,
                     storage_metrics: $storage_metrics
                   }

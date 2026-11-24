@@ -53,6 +53,7 @@ class FeatureFlags:
     storage_metrics: bool = True
     preserve_raw: bool = False  # no-op inside OAT mode (per-experiment cleanup)
     spark_metrics_capture: bool = True
+    extended_spark_profile: bool = False
     # compiler-bench: off by default. When on, the experiment runs the
     # incrementalizability survey INSTEAD of the timed batches — thousands of
     # views would otherwise pollute the timings it shares an engine with.
@@ -85,6 +86,7 @@ class FeatureFlags:
             spark_metrics_capture=flag(
                 "SPARK_METRICS_CAPTURE", defaults.spark_metrics_capture
             ),
+            extended_spark_profile=flag("EXTENDED_SPARK_PROFILE", defaults.extended_spark_profile),
             compiler_bench=flag("COMPILER_BENCH", defaults.compiler_bench),
             cost_model_bench=flag("COST_MODEL_BENCH", defaults.cost_model_bench),
         )
@@ -98,6 +100,7 @@ class FeatureFlags:
             "STORAGE_METRICS": "1" if self.storage_metrics else "0",
             "PRESERVE_RAW": "1" if self.preserve_raw else "0",
             "SPARK_METRICS_CAPTURE": "1" if self.spark_metrics_capture else "0",
+            "EXTENDED_SPARK_PROFILE": "1" if self.extended_spark_profile else "0",
             "COMPILER_BENCH": "1" if self.compiler_bench else "0",
             "COST_MODEL_BENCH": "1" if self.cost_model_bench else "0",
         }
@@ -457,6 +460,9 @@ class ExperimentInputs:
             preserve_raw=_flag(ff_d.get("preserve_raw"), base.feature_flags.preserve_raw),
             spark_metrics_capture=_flag(
                 ff_d.get("spark_metrics_capture"), base.feature_flags.spark_metrics_capture
+            ),
+            extended_spark_profile=_flag(
+                ff_d.get("extended_spark_profile"), base.feature_flags.extended_spark_profile
             ),
             compiler_bench=_flag(ff_d.get("compiler_bench"), base.feature_flags.compiler_bench),
             cost_model_bench=_flag(

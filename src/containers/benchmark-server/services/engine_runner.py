@@ -457,6 +457,7 @@ class EngineRunner:
                 ("collect_feldera_debug", self._collect_feldera_debug),
                 ("capture_logs", self._capture_logs),
                 ("databricks_enzyme_drop_mvs", self._databricks_enzyme_drop_mvs),
+                ("fabric_spark_history", self._export_fabric_spark_history),
                 ("fabric_cleanup", self._fabric_cleanup),
                 ("engine_mgr.down", lambda: self._engine_mgr.down(volumes=name == "materialize-emulator")),
                 ("cleanup_staging", self._cleanup_staging),
@@ -684,6 +685,17 @@ class EngineRunner:
         except Exception as e:
             self._emit(f"[databricks-enzyme] Post-run cleanup-schema WARN: {e}")
 
+    def _export_fabric_spark_history(self) -> None:
+        if self._engine.name not in ("fabric-openivm-jvm-35", "fabric-jvm-35"):
+            return
+        if os.environ.get("EXTENDED_SPARK_PROFILE") != "1":
+            return
+        response = requests.post(f"{self._dbt_url}/metrics/fabric/spark-history", timeout=600)
+        response.raise_for_status()
+        summary = response.json()
+        self._result.extra["spark_history"] = summary
+        self._emit(f"[{self._engine.name}] Spark history export: {summary}")
+
     def _fabric_cleanup(self) -> None:
         """End-of-run: tear down this run's compute lakehouse + environment so no
         experiment leaves stale resources behind (the shared cache lakehouse is
@@ -877,6 +889,10 @@ class EngineRunner:
         self._emit(f"[{name}] Batch {batch_num} starting")
         self._persist_batch_result(batch_num, batch)
 
+        extended_profile = os.environ.get("EXTENDED_SPARK_PROFILE") == "1"
+        if extended_profile:
+            batch.extra["profile_window_start_ms"] = int(time.time() * 1000)
+
         try:
             # Append data for batches 2/3. DuckDB and DuckDB-OpenIVM manage
             # DuckLake source appends inside their measured batch path; Feldera
@@ -1018,6 +1034,8 @@ class EngineRunner:
             raise
         finally:
             self._ensure_cpu_measurement_status(batch_num)
+            if extended_profile:
+                batch.extra["profile_window_end_ms"] = int(time.time() * 1000)
             # Always persist batch result to benchmark-server DB
             self._persist_batch_result(batch_num, batch)
 

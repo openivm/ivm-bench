@@ -1,8 +1,11 @@
 import csv
+import gzip
 import io
+import json
 import os
 import re
 import sys
+import tempfile
 import threading
 import types
 import unittest
@@ -62,6 +65,28 @@ class FabricRuntimePinTest(unittest.TestCase):
         self.request.side_effect = [self.initial, Mock(status_code=202, headers={"Location": "https://example.invalid/operation"}), self.updated]
         fabric._stage_spark_compute(self.properties)
         poll.assert_called_once_with("https://example.invalid/operation")
+
+
+class FabricSparkHistoryTest(unittest.TestCase):
+    def test_exports_paged_sql_plans_and_stage_metrics(self):
+        sessions = {"value": [{"livyId": "session", "sparkApplicationId": "app", "state": "Succeeded"}]}
+        responses = [sessions, [{"id": i} for i in range(100)], [{"id": 100, "nodes": []}],
+                     [{"stageId": 1, "inputRecords": 30}], [{"jobId": 1}]]
+        transport = self.enterContext(patch("services.fabric._fabric_req"))
+        transport.side_effect = [Mock(**{"json.return_value": payload}) for payload in responses]
+        self.enterContext(patch("services.fabric._workspace_base", return_value="https://example.invalid/workspace"))
+        self.enterContext(patch("services.fabric._compute_lakehouse_id", return_value="lakehouse"))
+        self.enterContext(patch("services.fabric._fabric_headers", return_value={}))
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "fabric-history.jsonl.gz"
+            summary = fabric.export_spark_history(path)
+            with gzip.open(path, "rt") as f:
+                rows = [json.loads(line) for line in f]
+        self.assertEqual(summary["status"], "ok")
+        self.assertEqual(summary["counts"], {"sessions": 1, "sql": 101, "jobs": 1, "stages": 1})
+        self.assertEqual(transport.call_args_list[2].kwargs["params"]["offset"], 100)
+        self.assertTrue(transport.call_args_list[1].args[1].endswith("/livySessions/session/applications/app/sql"))
+        self.assertIn({"kind": "stages", "application": "app", "data": {"stageId": 1, "inputRecords": 30}}, rows)
 
 
 class FabricCursorOwnershipTest(unittest.TestCase):
