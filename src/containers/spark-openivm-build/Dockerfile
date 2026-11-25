@@ -21,8 +21,8 @@
 #                            artifacts at /opt/spark-openivm/. entrypoint
 #                            copies them to ${OUTPUT_DIR:-/output}/.
 #
-#  This benchmark holds OPENIVM_SPARK_COMMIT fixed while testing the native
-#  DuckDB 2.0 compiler from the same OpenIVM revision as the DuckDB engine.
+#  The Spark and Fabric images use the same native OpenIVM revision as the
+#  DuckDB OpenIVM image.
 #  The native revision pins DuckDB, LPTS, and CI tools through its submodules.
 # =============================================================================
 
@@ -43,7 +43,7 @@ FROM duckdb-openivm-toolchain:ubuntu22.04-gcc13 AS openivm-builder
 WORKDIR /src
 
 ARG OPENIVM_REPO=https://github.com/ila/openivm.git
-ARG OPENIVM_COMMIT=159a3a18f4e14b6c8b03fdae406fa6a36d47afa1
+ARG OPENIVM_COMMIT=4a3a6a13eb64e519fa093e65ee4140fd1a1a5bdb
 
 # The OpenIVM revision pins matching DuckDB 2.0 and LPTS submodules.
 RUN git init -q && \
@@ -77,7 +77,7 @@ FROM eclipse-temurin:17-jdk AS spark-ext-builder
 
 ARG UBUNTU_MIRROR=http://archive.ubuntu.com/ubuntu
 ARG OPENIVM_SPARK_REPO=https://github.com/mdrakiburrahman/openivm-spark.git
-ARG OPENIVM_SPARK_COMMIT=ef7295cc9f8822b666b3d1bda4e7a3e261022bbd
+ARG OPENIVM_SPARK_COMMIT=9dd112d5e828934f781178ba6d4bb51837a23e66
 ARG SBT_VERSION=1.9.7
 
 ENV DEBIAN_FRONTEND=noninteractive
@@ -139,7 +139,7 @@ RUN test -s /tmp/openivm-extension.jar && \
 # -----------------------------------------------------------------------------
 FROM ubuntu:22.04
 
-ARG OPENIVM_SPARK_COMMIT=ef7295cc9f8822b666b3d1bda4e7a3e261022bbd
+ARG OPENIVM_SPARK_COMMIT=9dd112d5e828934f781178ba6d4bb51837a23e66
 LABEL org.openivm.spark.commit="${OPENIVM_SPARK_COMMIT}"
 
 # Cache-bust key: hash of the Dockerfile, toolchain image and any optional patches. The orchestrator
