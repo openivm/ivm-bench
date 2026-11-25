@@ -685,15 +685,24 @@ class EngineRunner:
         except Exception as e:
             self._emit(f"[databricks-enzyme] Post-run cleanup-schema WARN: {e}")
 
-    def _export_fabric_spark_history(self) -> None:
+    def _export_fabric_spark_history(self, batch_num: int | None = None) -> None:
         if self._engine.name not in ("fabric-openivm-jvm-35", "fabric-jvm-35"):
             return
         if os.environ.get("EXTENDED_SPARK_PROFILE") != "1":
             return
-        response = requests.post(f"{self._dbt_url}/metrics/fabric/spark-history", timeout=600)
-        response.raise_for_status()
-        summary = response.json()
-        self._result.extra["spark_history"] = summary
+        endpoint = f"{self._dbt_url}/metrics/fabric/spark-history"
+        extra = self._result.extra
+        if batch_num is not None:
+            endpoint += f"/{batch_num}"
+            extra = self._result.batches[batch_num - 1].extra
+        start = time.monotonic()
+        try:
+            response = requests.post(endpoint, timeout=600)
+            response.raise_for_status()
+            summary = response.json()
+        except (requests.RequestException, ValueError) as exc:
+            summary = {"status": "unavailable", "error": str(exc)}
+        extra["spark_history"] = {**summary, "export_wall_s": time.monotonic() - start}
         self._emit(f"[{self._engine.name}] Spark history export: {summary}")
 
     def _fabric_cleanup(self) -> None:
@@ -974,6 +983,9 @@ class EngineRunner:
                 batch.extra["correctness_validation"] = response.json()
 
             if run_id and batch.status != "failed":
+                # Fabric's retained Spark history rolls forward. Validation adds
+                # enough SQL and stages to displace the timed refreshes.
+                self._export_fabric_spark_history(batch_num)
                 if name == "duckdb-openivm":
                     if os.environ.get("OPENIVM_VALIDATE", "0") != "0":
                         self._validate_duckdb_openivm(run_id, batch_num)

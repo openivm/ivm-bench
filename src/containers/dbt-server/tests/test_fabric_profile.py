@@ -78,8 +78,10 @@ class FabricSparkHistoryTest(unittest.TestCase):
         self.enterContext(patch("services.fabric._compute_lakehouse_id", return_value="lakehouse"))
         self.enterContext(patch("services.fabric._fabric_headers", return_value={}))
         with tempfile.TemporaryDirectory() as tmp:
-            path = Path(tmp) / "fabric-history.jsonl.gz"
+            path = Path(tmp) / "fabric-spark-history-batch2.jsonl.gz"
             summary = fabric.export_spark_history(path)
+            exported_summary = json.loads((Path(tmp) / "fabric-spark-history-batch2-summary.json").read_text())
+            self.assertEqual(exported_summary, summary)
             with gzip.open(path, "rt") as f:
                 rows = [json.loads(line) for line in f]
         self.assertEqual(summary["status"], "ok")

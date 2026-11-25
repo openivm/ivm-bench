@@ -574,7 +574,8 @@ def export_spark_history(output: Path = Path("/data/stats/fabric-spark-history.j
 
     output.with_suffix(".tmp").replace(output)
     summary = {"status": "ok" if counts["sql"] and not failures else "partial", "counts": counts, "failures": failures}
-    output.with_name("fabric-spark-history-summary.json").write_text(json.dumps(summary, indent=2) + "\n")
+    summary_path = output.with_name(f"{output.name.removesuffix('.jsonl.gz')}-summary.json")
+    summary_path.write_text(json.dumps(summary, indent=2) + "\n")
     return summary
 
 

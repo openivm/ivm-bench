@@ -23,6 +23,7 @@ route handles the dbt build.
 """
 
 import logging
+from pathlib import Path
 
 from flask import Blueprint, Flask, jsonify, request
 
@@ -49,8 +50,12 @@ def provision():
 
 
 @bp.route("/metrics/fabric/spark-history", methods=["POST"])
-def spark_history():
-    return jsonify(fabric.export_spark_history()), 200
+@bp.route("/metrics/fabric/spark-history/<int:batch_num>", methods=["POST"])
+def spark_history(batch_num=None):
+    if batch_num is None:
+        return jsonify(fabric.export_spark_history()), 200
+    path = Path(f"/data/stats/fabric-spark-history-batch{batch_num}.jsonl.gz")
+    return jsonify(fabric.export_spark_history(path)), 200
 
 
 @bp.route("/environment/fabric/teardown", methods=["POST"])
