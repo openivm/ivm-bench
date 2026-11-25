@@ -1,3 +1,44 @@
+WITH daily AS (
+  SELECT
+    report_as_of_date,
+    household_id,
+    household_key,
+    product_version_key,
+    product_tier_key,
+    preference_key,
+    service_role,
+    reported_platform,
+    policy_type,
+    COUNT(DISTINCT engagement_registry_key) AS evaluated_engagements,
+    SUM(allocated_units) AS evaluated_units,
+    SUM(order_line_count) AS evaluated_order_lines
+  FROM int_hist_active_daily
+  WHERE
+    is_evaluated = TRUE
+  GROUP BY
+    report_as_of_date,
+    household_id,
+    household_key,
+    product_version_key,
+    product_tier_key,
+    preference_key,
+    service_role,
+    reported_platform,
+    policy_type
+  HAVING COUNT(DISTINCT engagement_registry_key) > 0
+), running AS (
+  SELECT
+    daily.*,
+    -- Counts each engagement once per report date. The window runs before
+    -- parent enrichment, at one row per date and dimension tuple.
+    CAST(SUM(CAST(evaluated_engagements AS BIGINT)) OVER (
+      PARTITION BY household_id, household_key, product_version_key, product_tier_key,
+                   preference_key, service_role, reported_platform, policy_type
+      ORDER BY report_as_of_date
+      RANGE BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW
+    ) AS BIGINT) AS running_evaluated_engagement_days
+  FROM daily
+)
 SELECT
   MD5(
     CONCAT_WS(
@@ -26,35 +67,9 @@ SELECT
   a.reported_platform,
   a.policy_type,
   TRY_CAST(COALESCE(m.parent_capacity_sum, 0) AS INT) AS parent_capacity_sum,
-  TRY_CAST(COALESCE(m.parent_limit_sum, 0) AS INT) AS parent_limit_sum
-FROM (
-  SELECT
-    report_as_of_date,
-    household_id,
-    household_key,
-    product_version_key,
-    product_tier_key,
-    preference_key,
-    service_role,
-    reported_platform,
-    policy_type,
-    COUNT(DISTINCT engagement_registry_key) AS evaluated_engagements,
-    SUM(allocated_units) AS evaluated_units,
-    SUM(order_line_count) AS evaluated_order_lines
-  FROM int_hist_active_daily
-  WHERE
-    is_evaluated = TRUE
-  GROUP BY
-    report_as_of_date,
-    household_id,
-    household_key,
-    product_version_key,
-    product_tier_key,
-    preference_key,
-    service_role,
-    reported_platform,
-    policy_type
-) AS a
+  TRY_CAST(COALESCE(m.parent_limit_sum, 0) AS INT) AS parent_limit_sum,
+  a.running_evaluated_engagement_days
+FROM running AS a
 LEFT JOIN (
   SELECT
     report_as_of_date,
@@ -106,5 +121,3 @@ LEFT JOIN (
   AND COALESCE(a.service_role, '') = COALESCE(m.service_role, '')
   AND COALESCE(a.reported_platform, '') = COALESCE(m.reported_platform, '')
   AND COALESCE(a.policy_type, '') = COALESCE(m.policy_type, '')
-WHERE
-  a.evaluated_engagements > 0

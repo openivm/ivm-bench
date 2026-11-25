@@ -168,6 +168,48 @@ class WorkloadTests(unittest.TestCase):
             self.assertEqual(result["model_rows"]["meta_ingestion"], 1)
             self.assertGreater(result["model_rows"]["int_engagement_observation_latest"], 0)
 
+    def test_daily_evaluated_running_window_propagates_a_late_correction(self):
+        config = {"report_date": "2002-12-31", "history_months": 12}
+        sql = pipeline.render_model("fact_engagement_status_evaluated_daily_hist_12m", config)
+        with duckdb.connect() as connection:
+            connection.execute("""
+                CREATE TABLE int_hist_active_daily AS
+                SELECT report_as_of_date, NULL::BIGINT AS household_id, household_key,
+                       1 AS product_version_key, 1 AS product_tier_key, 1 AS preference_key,
+                       NULL::VARCHAR AS service_role, 'web' AS reported_platform,
+                       'regular' AS policy_type, engagement_registry_key,
+                       1 AS allocated_units, 1 AS order_line_count,
+                       NULL::VARCHAR AS customer_path, 0 AS parent_capacity, 0 AS parent_limit,
+                       TRUE AS is_evaluated
+                FROM (VALUES
+                    (DATE '2002-12-01', 1, 'a'), (DATE '2002-12-01', 1, 'a'),
+                    (DATE '2002-12-01', 1, 'b'), (DATE '2002-12-02', 1, NULL),
+                    (DATE '2002-12-03', 1, 'a'), (DATE '2002-12-03', 2, 'a')
+                ) AS t(report_as_of_date, household_key, engagement_registry_key)
+            """)
+            result = f"""
+                SELECT household_key, report_as_of_date, evaluated_engagements,
+                       running_evaluated_engagement_days
+                FROM ({sql}) AS fact
+                ORDER BY household_key, report_as_of_date
+            """
+            self.assertEqual(connection.execute(result).fetchall(), [
+                (1, date(2002, 12, 1), 2, 2),
+                (1, date(2002, 12, 3), 1, 3),
+                (2, date(2002, 12, 3), 1, 1),
+            ])
+            connection.execute("""
+                UPDATE int_hist_active_daily
+                SET engagement_registry_key = 'a'
+                WHERE household_key = 1 AND report_as_of_date = DATE '2002-12-01'
+                  AND engagement_registry_key = 'b'
+            """)
+            self.assertEqual(connection.execute(result).fetchall(), [
+                (1, date(2002, 12, 1), 1, 1),
+                (1, date(2002, 12, 3), 1, 2),
+                (2, date(2002, 12, 3), 1, 1),
+            ])
+
     def test_null_safe_household_joins_preserve_original_model_bags(self):
         with fixture() as connection:
             configuration = generate.prepare(connection, "base", report_date=date(2002, 12, 31))
