@@ -179,6 +179,38 @@ class MutationTests(unittest.TestCase):
                     self.assertEqual(batch["configuration"]["report_date"], "2002-12-31")
                 self.assertEqual(results["batches"][-1]["source_rows"], manifest["batches"][-1]["source_rows"])
 
+    def test_update_trace_is_identical_across_batch_boundaries(self):
+        def trace(root, widths):
+            with fixture() as planner, duckdb.connect() as replay:
+                generate.prepare(planner, "base", report_date=date(2002, 12, 31))
+                manifest = mutations.plan(planner, root, mode="updates", steps=[
+                    {"insert_pct": "0", "update_pct": width, "delete_pct": "0"}
+                    for width in widths
+                ])
+                mutations.load_initial(replay, manifest, root)
+                changes = []
+                for batch in manifest["batches"]:
+                    mutations.apply_batch(replay, manifest, root, batch)
+                    for operation in batch["operations"]:
+                        for side in ("before", "after"):
+                            image = operation[side]
+                            rows = replay.execute("SELECT to_json(r) FROM read_parquet(?) r",
+                                                  [str(root / image["path"])]).fetchall()
+                            changes.extend((side, operation["table"], row[0]) for row in rows)
+                final = {
+                    table: replay.execute(f"SELECT * FROM {table} ORDER BY _source_row_id").fetchall()
+                    for table in mutations.sources()
+                }
+                return changes, final
+
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            combined, combined_state = trace(root / "combined", ["100", "1.0001"])
+            split, split_state = trace(root / "split", ["99", "1", "0.33335", "0.33335", "0.3334"])
+            self.assertGreater(len(combined), 0)
+            self.assertCountEqual(combined, split)
+            self.assertEqual(combined_state, split_state)
+
     def test_replay_matches_planned_source_payloads(self):
         with tempfile.TemporaryDirectory() as folder, fixture() as planner, duckdb.connect() as replay:
             generate.prepare(planner, "base", report_date=date(2002, 12, 31))

@@ -52,8 +52,12 @@ def percentage(value):
     return number
 
 
+def bucket_boundary(value):
+    return int((value * SCORE_MODULUS / 100).to_integral_value(rounding=ROUND_HALF_UP))
+
+
 def bucket_width(value):
-    return int((percentage(value) * SCORE_MODULUS / 100).to_integral_value(rounding=ROUND_HALF_UP))
+    return bucket_boundary(percentage(value))
 
 
 def score(seed, batch):
@@ -156,6 +160,8 @@ def plan(connection, directory, *, mode="insertion", initial_pct="100", steps=No
                 "insert_semantics": "source_pool_copies_with_fresh_physical_ids",
                 "physical_insert_identity": "md5(insert:source_dataset_id:mutation_seed:batch:original_source_row_id)",
                 "repeat_selection": "same_source_selection_each_round" if mode == "repeated_insertions" else "seeded_per_batch"}
+    if mode == "updates":
+        settings["update_selection"] = "consecutive_seeded_buckets"
     identity = {"mutation_version": 1, "source_configuration": configuration, "settings": settings,
                 "update_assignments": UPDATES, "event_date_expressions": EVENT_DATES}
     manifest = {**identity, "workload": "extended-tpcds",
@@ -197,12 +203,23 @@ def plan(connection, directory, *, mode="insertion", initial_pct="100", steps=No
             path = directory / manifest["initial"][table]["path"]
             connection.execute(f"CREATE TEMP VIEW pool_{table} AS SELECT * FROM read_parquet({quote(path)})")
     row_counts = {table: image["rows"] for table, image in manifest["initial"].items()}
+    update_total = Decimal(0)
     for number, step in enumerate(steps, 2):
         batch_path = directory / f"batch{number}"
         batch_path.mkdir()
         summary = {"number": number, "percentages": step, "arrival_date": str(start + timedelta(days=number-2)) if mode == "days" else None,
                    "operations": []}
         update_width = bucket_width(step["update_pct"])
+        update_score = score(seed, number)
+        if mode == "updates":
+            # Cut one seeded cycle at cumulative percentage boundaries.
+            # Equal cumulative percentages select the same logical updates,
+            # even when split at different batch boundaries or across a wrap.
+            start_bucket = bucket_boundary(update_total)
+            update_total += percentage(step["update_pct"])
+            update_width = bucket_boundary(update_total) - start_bucket
+            offset = start_bucket % SCORE_MODULUS
+            update_score = f"(({score(seed, 2)} + {SCORE_MODULUS - offset}) % {SCORE_MODULUS})"
         delete_width = min(bucket_width(step["delete_pct"]), SCORE_MODULUS - update_width)
         for table, assignments in UPDATES.items():
             predicate = cohort_predicate(table, mutation_cohort)
@@ -212,7 +229,7 @@ def plan(connection, directory, *, mode="insertion", initial_pct="100", steps=No
                 if lower == upper:
                     continue
                 # Plan both disjoint buckets against existing physical keys.
-                selected = f"({predicate}) AND {score(seed, number)} >= {lower} AND {score(seed, number)} < {upper}"
+                selected = f"({predicate}) AND {update_score} >= {lower} AND {update_score} < {upper}"
                 connection.execute(f"CREATE OR REPLACE TEMP TABLE changes AS SELECT * FROM {table} WHERE {selected}")
                 before = export_rows(connection, "SELECT * FROM changes", batch_path / f"{table}.{operation}.before.parquet", directory)
                 if operation == "delete":

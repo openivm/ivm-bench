@@ -22,6 +22,7 @@ import io
 import logging
 from typing import Any, Dict, List, Optional, Tuple
 
+from services.openivm_profile import summarize_refresh_statements
 from services.spark_openivm_sources import LivyClient
 
 logger = logging.getLogger(__name__)
@@ -286,6 +287,7 @@ def profile_payload(rows, run_id, batch_num):
         "batch_num": batch_num,
         "row_count": len(rows),
         "view_count": view_count,
+        "refresh_statements": summarize_refresh_statements(rows),
         "csv": {
             "profile": profile_csv,
             "by_step": by_step_csv,

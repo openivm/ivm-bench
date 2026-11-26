@@ -651,6 +651,11 @@ class Orchestrator:
                 "3": inputs.batch_3_pct,
             },
         })
+        if inputs.workload == 'extended-tpcds':
+            counts["configured_insert_pct"].update({
+                number: batch['percentages']['insert_pct'] for number, batch in counts['batches'].items()
+                if 'percentages' in batch
+            })
         self._current_source_row_counts = counts
         if inputs.repeated_refresh:
             counts["configured_insert_pct"] = {
@@ -666,6 +671,11 @@ class Orchestrator:
                     )
         for batch_num in range(1, self._config.batch_count + 1):
             batch = counts["batches"][str(batch_num)]
+            for operation, affected in batch.get('operation_rows', {}).items():
+                if operation != 'insert' and affected:
+                    by_table = ", ".join(f"{name}={rows:,}" for name, rows in affected.items())
+                    self.emit(f"  [datagen] Batch {batch_num} {operation} rows="
+                              f"{sum(affected.values()):,} ({by_table})")
             tables = ", ".join(
                 f"{table}={rows:,}" for table, rows in batch["tables"].items()
             )

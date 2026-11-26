@@ -16,14 +16,18 @@ def collect_extended_source_row_counts(directory: str) -> Dict[str, Any]:
     initial = {name: image['rows'] for name, image in manifest['initial'].items()}
     batches = {'1': {'tables': initial, 'total_rows': sum(initial.values()), 'resulting_tables': initial}}
     for batch in manifest['batches']:
-        inserted = {}
+        operation_rows = {'insert': {}, 'update': {}, 'delete': {}}
         for operation in batch['operations']:
-            if operation['kind'] == 'insert':
-                name = operation['table']
-                inserted[name] = inserted.get(name, 0) + operation['after']['rows']
+            kind, name = operation['kind'], operation['table']
+            tables = operation_rows[kind]
+            image = operation['before'] if kind == 'delete' else operation['after']
+            tables[name] = tables.get(name, 0) + image['rows']
+        inserted = operation_rows['insert']
         batches[str(batch['number'])] = {'tables': inserted, 'total_rows': sum(inserted.values()),
-                                         'resulting_tables': batch['source_rows']}
-    return {'batches': batches, 'preparation': preparation}
+                                         'resulting_tables': batch['source_rows'],
+                                         'operation_rows': operation_rows,
+                                         'percentages': batch['percentages']}
+    return {'batches': batches, 'preparation': preparation, 'plan_id': manifest['plan_id']}
 
 
 def _active_table_rows(table_dir: str) -> int:

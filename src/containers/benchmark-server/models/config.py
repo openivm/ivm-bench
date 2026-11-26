@@ -264,6 +264,8 @@ def workload_cache_key(config):
     payload = {"workload": config.workload, "scale_factor": config.scale_factor,
                "options": options, "initial_pct": config.batch_1_pct,
                "steps": config.extended_tpcds.steps(config)}
+    if config.extended_tpcds.mode == "updates":
+        payload["update_selection"] = "consecutive_seeded_buckets"
     return hashlib.sha256(json.dumps(payload, sort_keys=True).encode()).hexdigest()[:16]
 
 

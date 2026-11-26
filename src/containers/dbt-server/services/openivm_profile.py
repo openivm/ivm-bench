@@ -1,6 +1,7 @@
 """OpenIVM profiling export helpers."""
 
 import csv
+import math
 import os
 import subprocess
 import tempfile
@@ -14,6 +15,43 @@ MEM_LIMIT = os.environ.get("DUCKDB_OPENIVM_MEM_LIMIT", "115GB")
 TEMP_DIR = Path(os.environ.get("DUCKDB_OPENIVM_TEMP_DIR", str(WORK_DIR / "_tmp")))
 THREADS = os.environ.get("DUCKDB_OPENIVM_THREADS", "")
 CAPTURE_SQL = os.environ.get("OPENIVM_CAPTURE_SQL", "0") == "1"
+
+
+def summarize_refresh_statements(rows):
+    """Summarize non-overlapping statement spans per captured refresh."""
+    refreshes = {}
+    for row in rows:
+        step = row.get("step_name")
+        if step not in ("execute_refresh_sql_stmt", "command_span", "total_refresh",
+                        "generate_refresh_sql.metadata_lookup"):
+            continue
+        view, refresh = row["view_name"], str(row["refresh_id"])
+        summary = refreshes.setdefault((view, refresh), {
+            "view_name": view, "refresh_id": refresh, "statements": {},
+        })
+        detail, _, sql = (row.get("detail") or "").partition("sql=")
+        fields = dict(part.strip().split("=", 1) for part in detail.replace(", ", ";").split(";")
+                      if "=" in part)
+        if "refresh_type" in fields:
+            summary["strategy"] = fields["refresh_type"]
+        if "outcome" in fields:
+            summary["outcome"] = fields["outcome"]
+        if step == "generate_refresh_sql.metadata_lookup":
+            continue
+        try:
+            duration = float(row.get("duration_ms"))
+        except (TypeError, ValueError):
+            continue
+        if not math.isfinite(duration):
+            continue
+        if step == "execute_refresh_sql_stmt":
+            kind = fields.get("stmt_kind") or (sql.split(maxsplit=1)[0].lower() if sql.strip() else "unknown")
+            entry = summary["statements"].setdefault(kind, {"count": 0, "duration_ms": 0.0})
+            entry["count"] += 1
+            entry["duration_ms"] += duration
+        else:
+            summary[step + "_ms"] = duration
+    return list(refreshes.values())
 
 
 def _sql_literal(value: str) -> str:
@@ -130,6 +168,7 @@ def export_profile(run_id: str, batch_num: int) -> dict:
             "row_count": len(rows),
             "view_count": len({row["view_name"] for row in rows if row.get("view_name")}),
             "sql_archive_paths": sql_archive_paths,
+            "refresh_statements": summarize_refresh_statements(rows),
             "csv": {
                 "profile": profile_csv,
                 "cli_timings": cli_timings,

@@ -134,7 +134,7 @@ class ExtendedTPCDSConfigTests(unittest.TestCase):
 
     def test_extended_source_reporting_uses_its_plan_and_retains_byte_measurements(self):
         from services.orchestrator import Orchestrator
-        e = self.experiment(scale_factor=25,extended_tpcds={'source_size_gb':25})
+        e = self.experiment(scale_factor=25,extended_tpcds={'source_size_gb':25,'batches':4})
         runner = Orchestrator.__new__(Orchestrator)
         runner._config = BenchmarkConfig(workload=e.workload, scale_factor=e.scale_factor,
                                          extended_tpcds=e.extended_tpcds, batch_1_pct=e.batch_1_pct,
@@ -143,12 +143,16 @@ class ExtendedTPCDSConfigTests(unittest.TestCase):
         runner.emit = Mock()
         counts = {'batches':{str(n):{'tables':{'events':n},'total_rows':n} for n in (1,2,3)},
                   'preparation':{'source_storage':{'parquet_uncompressed_bytes':25_000_000_000}}}
+        counts['batches']['4'] = {'tables': {}, 'total_rows': 0, 'percentages': {'insert_pct': '0'},
+                                  'operation_rows': {'update': {'events': 1}}}
         with patch('services.orchestrator.collect_extended_source_row_counts',return_value=counts) as collect, \
              patch('services.orchestrator.collect_source_row_counts') as delta:
             runner._record_source_row_counts(0,e)
         delta.assert_not_called()
         self.assertTrue(collect.call_args.args[0].endswith('/extended-tpcds/'+workload_cache_key(runner._config)))
         self.assertEqual(runner._current_source_row_counts['batches']['1']['total_rows'],1)
+        self.assertEqual(runner._current_source_row_counts['configured_insert_pct']['4'], '0')
+        runner.emit.assert_any_call('  [datagen] Batch 4 update rows=1 (events=1)')
         self.assertEqual(runner._current_source_row_counts['preparation']['source_storage']['parquet_uncompressed_bytes'],25_000_000_000)
 
     def test_preparation_streams_progress_and_stops_containers_on_timeout(self):

@@ -210,18 +210,89 @@ def load_image(connection, path, table, fields, engine):
     return copied
 
 
+def apply_materialize_update(connection, cursor, directory, operation, fields, assignments):
+    target = ident(operation['table'])
+    key = ident('_source_row_id')
+    before, after = '_xt_update_before', '_xt_update_after'
+    columns = ', '.join(map(ident, fields))
+    schema = ', '.join(ident(name)+' '+source_type(kind, 'materialize-emulator')
+                       for name, kind in fields.items())
+    row_count = operation['before']['rows']
+    if row_count != operation['after']['rows']:
+        raise ValueError('update images have different row counts: '+target)
+    if not row_count:
+        return
+    for name, side in ((before, 'before'), (after, 'after')):
+        cursor.execute(f'CREATE TEMP TABLE {name} ({schema})')
+        copied = load_image(connection, directory/operation[side]['path'], name, fields, 'materialize-emulator')
+        if copied != row_count:
+            raise ValueError('source image row count mismatch: '+target)
+        cursor.execute(f'SELECT count(DISTINCT {key}) FROM {name}')
+        if cursor.fetchone()[0] != row_count:
+            raise ValueError('update image has duplicate or NULL physical identities: '+target)
+
+    def check_image(image):
+        current = f'SELECT {columns} FROM {target} WHERE {key} IN (SELECT {key} FROM {image})'
+        expected = f'SELECT {columns} FROM {image}'
+        cursor.execute(f'SELECT count(*) FROM (({current} EXCEPT ALL {expected}) '
+                       f'UNION ALL ({expected} EXCEPT ALL {current})) AS differences')
+        if cursor.fetchone()[0]:
+            raise ValueError(f'update image {image} does not match source: '+target)
+
+    cursor.execute(f'SELECT count(*) FROM (SELECT {key} FROM {after} '
+                   f'EXCEPT SELECT {key} FROM {before}) AS differences')
+    if cursor.fetchone()[0]:
+        raise ValueError('update images have different physical identities: '+target)
+    check_image(before)
+
+    # Materialize supports neither UPDATE FROM nor subqueries in SET.
+    # Use bounded CASE assignments driven by the typed after image.
+    parsed = sqlglot.parse_one('UPDATE '+target+' SET '+assignments, read='duckdb')
+    changed = [assignment.this.name for assignment in parsed.expressions]
+    path = directory/operation['after']['path']
+    for batch in pq.ParquetFile(path).iter_batches(batch_size=128, columns=['_source_row_id', *changed]):
+        rows = batch.to_pylist()
+        ids = [str(uuid.UUID(bytes=value)) if isinstance(value, bytes) else str(value)
+               for value in (row['_source_row_id'] for row in rows)]
+        parameters = []
+        clauses = []
+        for name in changed:
+            column = ident(name)
+            kind = source_type(fields[name], 'materialize-emulator')
+            branches = ' '.join(f'WHEN %s THEN CAST(%s AS {kind})' for _ in rows)
+            clauses.append(f'{column} = CASE {key} {branches} ELSE {column} END')
+            for identity, row in zip(ids, rows):
+                parameters.extend((identity, row[name]))
+        key_parameters = ', '.join('%s' for _ in ids)
+        cursor.execute(f'UPDATE {target} SET {", ".join(clauses)} WHERE {key} IN ({key_parameters})',
+                       [*parameters, *ids])
+    check_image(after)
+    for name in (before, after):
+        cursor.execute(f'DROP TABLE {name}')
+
+
 def replay(connection, manifest, directory, batch, engine):
     from services.extended_tpcds import mutations
     images = list(manifest['initial'].items()) if batch==1 else []
+    updates = []
     if batch>1:
         for op in manifest['batches'][batch-2]['operations']:
-            if op['kind']!='insert' or op['before']:
-                raise ValueError('PostgreSQL-wire Fabric-DS currently requires insert-only mutations')
-            images.append((op['table'],op['after']))
-    for table,image in images:
+            if op['kind']=='insert' and not op['before']:
+                images.append((op['table'],op['after']))
+            elif engine == 'materialize-emulator' and op['kind']=='update' and op['table'] in mutations.UPDATES:
+                updates.append(op)
+            else:
+                allowed = 'inserts and updates' if engine == 'materialize-emulator' else 'insert-only mutations'
+                raise ValueError(f'{engine} Fabric-DS currently requires {allowed}')
+    checked_images = images + [(op['table'], op[side]) for op in updates for side in ('before', 'after')]
+    for table,image in checked_images:
         if table not in manifest['schemas'] or mutations.file_checksum(directory/image['path'])!=image['sha256']:
             raise ValueError('unknown source or image checksum mismatch: '+table)
     with connection.cursor() as cursor:
+        for op in updates:
+            table = op['table']
+            apply_materialize_update(connection, cursor, directory, op, manifest['schemas'][table],
+                                     mutations.UPDATES[table])
         for table,image in images:
             fields=manifest['schemas'][table]
             if batch==1:
@@ -290,7 +361,7 @@ def run_batch(engine,batch_num,manifest_path,work_dir,options):
             'classification_counts':{kind:sum(m['classification']==kind for m in materializations.values()) for kind in ('incremental','static')},
             'source_storage':'native_tables',
             'options':options,'configuration':manifest['source_configuration'],
-            'timing_semantics':'source insertion plus native MV creation/completion fences; counts and independent validation excluded; per-model refresh time unavailable'}
+            'timing_semantics':'source replay plus native MV creation/completion fences; counts and independent validation excluded; per-model refresh time unavailable'}
     (work_dir/f'batch{batch_num}.json').write_text(json.dumps(result,indent=2))
     return result
 

@@ -20,6 +20,25 @@ class BatchProfileTest(unittest.TestCase):
     def setUp(self):
         self.enterContext(patch.dict(os.environ,{'OPENIVM_PROFILE_REFRESH':'1'}))
 
+    def test_statement_summary_keeps_spans_separate_and_accepts_both_engines(self):
+        from services.openivm_profile import summarize_refresh_statements
+
+        rows = [
+            dict(view_name='v', refresh_id=1, step_name=step, duration_ms=duration, detail=detail)
+            for step, duration, detail in [
+                ('execute_refresh_sql_stmt', 5, 'statement=1;bytes=99;stmt_kind=merge'),
+                ('execute_refresh_sql_stmt', 7, 'statement=2/2, bytes=77, sql=INSERT INTO t SELECT 1'),
+                ('total_refresh', 15, 'refresh_type=GROUP_RECOMPUTE;outcome=incremental_executed'),
+                ('command_span', 20, ''),
+            ]
+        ]
+        self.assertEqual(summarize_refresh_statements(rows), [{
+            'view_name': 'v', 'refresh_id': '1', 'strategy': 'GROUP_RECOMPUTE',
+            'outcome': 'incremental_executed', 'total_refresh_ms': 15.0, 'command_span_ms': 20.0,
+            'statements': {'merge': {'count': 1, 'duration_ms': 5.0},
+                           'insert': {'count': 1, 'duration_ms': 7.0}},
+        }])
+
     def test_native_profile_resolves_internal_ids_before_filtering_models(self):
         import duckdb
         from sql_catalog import load_sql

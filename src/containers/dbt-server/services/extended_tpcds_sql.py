@@ -237,17 +237,29 @@ def queries(manifest, options, namespace):
 
 def full_recompute_query(query):
     """Keep the two grouped fact branches out of Spark's broadcast exchange."""
+    from sqlglot.optimizer.scope import Scope, traverse_scope
+
+    def grouped_branch(scope, relation):
+        branch = scope.sources.get(relation.alias_or_name)
+        while isinstance(branch, Scope) and isinstance(branch.expression, exp.Select):
+            select = branch.expression
+            if select.args.get('group'):
+                return True
+            source = select.args.get('from_')
+            if source is None or select.args.get('joins'):
+                break
+            branch = branch.sources.get(source.this.alias_or_name)
+        return False
+
     tree = sqlglot.parse_one(query, read='spark')
-    for select in tree.find_all(exp.Select):
+    for scope in traverse_scope(tree):
+        select = scope.expression
         source = select.args.get('from_')
-        if not (source and isinstance(source.this, exp.Subquery)
-                and isinstance(source.this.this, exp.Select)
-                and source.this.this.args.get('group')):
+        if not source or not grouped_branch(scope, source.this):
             continue
         for join in select.args.get('joins', []):
             right = join.this
-            if (isinstance(right, exp.Subquery) and isinstance(right.this, exp.Select)
-                    and right.this.args.get('group') and right.alias):
+            if right.alias and grouped_branch(scope, right):
                 # These aggregates exceed Spark's 8 GiB broadcast limit at
                 # SF100. Leave small lookup/affected-partition joins alone.
                 hint = select.args.get('hint') or exp.Hint(expressions=[])

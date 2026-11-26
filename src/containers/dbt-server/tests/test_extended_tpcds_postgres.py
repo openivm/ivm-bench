@@ -221,6 +221,40 @@ class PostgresWorkloadTests(unittest.TestCase):
                 pg.replay(connection,manifest,root,2,'risingwave')
             connection.cursor.assert_not_called()
 
+    def test_materialize_update_replays_images_and_rejects_a_stale_before_image(self):
+        from services.extended_tpcds import mutations
+
+        with tempfile.TemporaryDirectory() as folder, duckdb.connect() as db:
+            root = Path(folder)
+            table = 'ext_purchase_usage_events'
+            db.execute(f"CREATE TABLE {table} (_source_row_id VARCHAR, purchase_quantity INTEGER)")
+            db.execute(f"INSERT INTO {table} VALUES ('a', NULL), ('b', 7)")
+            operation = {
+                'kind': 'update', 'table': table,
+                'before': mutations.export_rows(db, f"SELECT * FROM {table} WHERE _source_row_id='a'",
+                                                root / 'before.parquet', root),
+                'after': mutations.export_rows(db, "SELECT 'a' AS _source_row_id, 1 AS purchase_quantity",
+                                               root / 'after.parquet', root),
+            }
+
+            class Cursor:
+                def execute(self, query, parameters=None):
+                    return db.execute(query.replace('%s', '?'), parameters)
+                def fetchone(self):
+                    return db.fetchone()
+
+            def load(_, path, name, fields, engine):
+                db.execute(f'INSERT INTO {name} SELECT * FROM read_parquet(?)', [str(path)])
+                return db.execute(f'SELECT count(*) FROM {name}').fetchone()[0]
+
+            fields = {'_source_row_id': 'VARCHAR', 'purchase_quantity': 'INTEGER'}
+            with patch.object(pg, 'load_image', side_effect=load):
+                pg.apply_materialize_update(None, Cursor(), root, operation, fields, mutations.UPDATES[table])
+                self.assertEqual(db.execute(f'SELECT * FROM {table} ORDER BY _source_row_id').fetchall(),
+                                 [('a', 1), ('b', 7)])
+                with self.assertRaisesRegex(ValueError, 'before does not match source'):
+                    pg.apply_materialize_update(None, Cursor(), root, operation, fields, mutations.UPDATES[table])
+
     def test_connection_closes_even_when_session_setup_fails(self):
         with patch.object(pg.psycopg2,'connect') as factory:
             factory.return_value.cursor.return_value.__enter__.return_value.execute.side_effect=RuntimeError('setup failed')

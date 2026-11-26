@@ -32,6 +32,9 @@ engine attempt after saving diagnostics; other engines still continue. Profile
 step totals can overlap and must not be added to complete-command times.
 Older Fabric-DS runs could record the flag as ON while bypassing profiling;
 the flag alone is not evidence that those runs contain native profiles.
+The existing OpenIVM profile JSON also summarizes statement counts and times by
+kind and refresh ID alongside the recorded strategy and command span. Statement
+times are contained within command spans. They do not measure affected rows.
 
 ### Validation budget and Spark maintenance eligibility
 
@@ -697,6 +700,14 @@ using only current rows for metadata histories. Actual affected row counts are
 recorded per source and operation. The two mutation buckets are disjoint and their
 percentages must sum to at most 100. Fractional percentages are supported.
 
+The `fabric-ds-sf1-update-sweep.json` preset compares one 0.25% refresh,
+one 1% refresh, and four 0.25% refreshes on the same initial snapshot.
+Update-only plans cut a fixed seeded sequence of hash buckets at cumulative
+percentage boundaries. One 1% refresh and four 0.25% refreshes therefore update
+the same physical rows to the same final values. A sweep past 100% cycles back
+to the first bucket. Actual counts are recorded per table, including updates
+that leave row counts unchanged. Mixed-DML plans still select rows per batch.
+
 Updates preserve physical IDs and business identities. Purchase/secondary/receipt
 quantities increase by one; engagement assessment keys change; parent state,
 store eligibility and account offer toggle; engagement capacity increases by one;
@@ -1284,7 +1295,9 @@ creates native source tables once and maintains native materialized views;
 there is no model-table fallback. Initial Materialize ingestion uses bounded
 COPY chunks; RisingWave uses bounded INSERT groups to respect parser limits.
 UUID source identities retain their canonical textual form for replay guards.
-These initial integrations accept insert-only plans and reject other mutations.
+RisingWave accepts insert-only plans. Materialize also applies updates using
+the typed after images and checks both images against the source. A Materialize
+batch can use multiple autocommitted statements before the completion fence.
 RisingWave uses a six-hour minimum SST retention window for Fabric-DS so
 backfill objects can still commit when initialization exceeds the base
 configuration's 30-minute watermark. Older SSTs can occupy disk for longer.
