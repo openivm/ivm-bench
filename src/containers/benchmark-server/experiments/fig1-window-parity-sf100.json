@@ -1,0 +1,40 @@
+{
+  "_design_notes": [
+    "Run one SF100 repetition on each OpenIVM Spark engine. Enable the window paths and compiler cache used in Figure 1 and restore its 4\u20139 dynamic executor range in the per-run Fabric Environment.",
+    "Use the same source batches, dbt threads, validation and profiling as the previous PR runs. Record the window settings and Fabric compute separately from compiler changes."
+  ],
+  "baseline": {
+    "engines": [
+      "spark-openivm",
+      "fabric-openivm-jvm-35"
+    ],
+    "schedule": "serial",
+    "batch_1_pct": "100",
+    "batch_2_pct": "1",
+    "batch_3_pct": "0.01",
+    "feature_flags": {
+      "openivm_validate": true,
+      "openivm_profile_refresh": true,
+      "openivm_query_log": true,
+      "openivm_running_windows": true,
+      "openivm_grouped_windows": true,
+      "openivm_compile_cache": true,
+      "storage_metrics": true,
+      "extended_spark_profile": true,
+      "preserve_raw": true
+    },
+    "spark_tunables": {
+      "dbt_threads": 4,
+      "fabric_executor_range": [
+        4,
+        9
+      ]
+    }
+  },
+  "experiments": [
+    {
+      "label": "fig1-window-parity-sf100",
+      "scale_factor": 100
+    }
+  ]
+}

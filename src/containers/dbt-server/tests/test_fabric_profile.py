@@ -91,6 +91,25 @@ class FabricSparkHistoryTest(unittest.TestCase):
         self.assertIn({"kind": "stages", "application": "app", "data": {"stageId": 1, "inputRecords": 30}}, rows)
 
 
+    def test_exports_requested_executor_shape_for_pinned_runs(self):
+        self.enterContext(patch.dict(os.environ, {"FABRIC_SPARK_EXECUTOR_RANGE": "[4,9]"}))
+        self.enterContext(patch("services.fabric._workspace_base", return_value="https://example.invalid/workspace"))
+        self.enterContext(patch("services.fabric._compute_lakehouse_id", return_value="lakehouse"))
+        self.enterContext(patch("services.fabric._fabric_headers", return_value={}))
+        transport = self.enterContext(patch("services.fabric._fabric_req"))
+        resources = {"executorCores": 8, "numExecutors": 4, "dynamicAllocationMaxExecutors": 9}
+        responses = [{"value": [{"livyId": "session", "sparkApplicationId": "app"}]},
+                     resources, [{"id": 0}], [], []]
+        transport.side_effect = [Mock(**{"json.return_value": payload}) for payload in responses]
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "history.jsonl.gz"
+            self.assertEqual(fabric.export_spark_history(path)["status"], "ok")
+            with gzip.open(path, "rt") as export:
+                session = json.loads(next(export))["data"]
+        self.assertEqual({key: session[key] for key in resources}, resources)
+        self.assertTrue(transport.call_args_list[1].args[1].endswith("/livySessions/session"))
+
+
 class FabricCursorOwnershipTest(unittest.TestCase):
     def setUp(self):
         self.session = MagicMock(is_new_session_required=False)

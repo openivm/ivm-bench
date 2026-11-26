@@ -548,6 +548,15 @@ def export_spark_history(output: Path = Path("/data/stats/fabric-spark-history.j
                                         "driverMemory", "driverCores", "executorMemory", "executorCores",
                                         "numExecutors", "queuedDuration", "runningDuration") if k in session
             }
+            if os.environ.get("FABRIC_SPARK_EXECUTOR_RANGE"):
+                try:
+                    details = get(f"{lakehouse}/{livy_id}")
+                    for key in ("driverMemory", "driverCores", "executorMemory", "executorCores",
+                                "numExecutors", "dynamicAllocationMaxExecutors", "isDynamicAllocationEnabled"):
+                        if key in details:
+                            identity[key] = details[key]
+                except (requests.RequestException, ValueError, TimeoutError) as error:
+                    failures.append({"kind": "session_compute", "application": app_id, "error": str(error)})
             write("sessions", app_id, [identity])
             base = f"{lakehouse}/{livy_id}/applications/{app_id}"
             for kind in ("sql", "stages", "jobs"):
@@ -944,6 +953,9 @@ def default_openivm_spark_properties() -> Dict[str, str]:
         "spark.openivm.delta.enableDeletionVectors": "true",
         "spark.openivm.refresh.semiJoinPrune.enabled": "true",
         "spark.openivm.refresh.scd2RangeAccel.enabled": "true",
+        "spark.openivm.refresh.windowRunningIncremental.enabled": os.environ.get("OPENIVM_RUNNING_WINDOWS", "false"),
+        "spark.openivm.refresh.groupedWindowState.enabled": os.environ.get("OPENIVM_GROUPED_WINDOWS", "false"),
+        "spark.openivm.compile.classificationCache.enabled": os.environ.get("OPENIVM_COMPILE_CACHE", "false"),
         "spark.databricks.delta.schema.autoMerge.enabled": "true",
         "spark.openivm.profile.refresh": _b("OPENIVM_PROFILE_REFRESH"),
         "spark.openivm.queryLog.enabled": _b("OPENIVM_QUERY_LOG"),
@@ -967,6 +979,14 @@ def publish_empty_environment() -> dict:
 
 def _stage_spark_compute(properties: Dict[str, str]) -> None:
     """Use the stable API contract and verify the runtime/config before publish."""
+    executor_range = os.environ.get("FABRIC_SPARK_EXECUTOR_RANGE")
+    allocation = {}
+    if executor_range:
+        limits = json.loads(executor_range)
+        if (not isinstance(limits, list) or len(limits) != 2
+                or any(type(n) is not int for n in limits) or not 1 <= limits[0] <= limits[1]):
+            raise ValueError("FABRIC_SPARK_EXECUTOR_RANGE requires positive [min, max] executor counts")
+        allocation = {"enabled": True, "minExecutors": limits[0], "maxExecutors": limits[1]}
     url = f"{_env_base()}/staging/sparkcompute"
     hdr = {**_fabric_headers(), "Content-Type": "application/json"}
     params = {"beta": "false"}
@@ -977,7 +997,8 @@ def _stage_spark_compute(properties: Dict[str, str]) -> None:
     patch = _fabric_req(
         "PATCH", url, headers=hdr, params=params,
         json={"runtimeVersion": RUNTIME_VERSION,
-              "sparkProperties": [{"key": key, "value": value} for key, value in properties.items()]},
+              "sparkProperties": [{"key": key, "value": value} for key, value in properties.items()],
+              **({"dynamicExecutorAllocation": allocation} if allocation else {})},
     )
     if patch.status_code not in (200, 202):
         raise RuntimeError(f"sparkcompute PATCH failed: HTTP {patch.status_code} {patch.text[:300]}")
@@ -993,7 +1014,11 @@ def _stage_spark_compute(properties: Dict[str, str]) -> None:
     mismatches = [key for key, value in properties.items() if staged.get(key) != value]
     if mismatches:
         raise RuntimeError(f"Fabric Spark properties not applied: {', '.join(mismatches)}")
-    logger.info("[fabric] verified runtime=%s, Spark properties=%d", RUNTIME_VERSION, len(properties))
+    actual_allocation = compute.get("dynamicExecutorAllocation") or {}
+    if any(actual_allocation.get(key) != value for key, value in allocation.items()):
+        raise RuntimeError(f"Fabric executor allocation pin not applied: expected {allocation}, got {actual_allocation}")
+    logger.info("[fabric] verified runtime=%s, Spark properties=%d, executor allocation=%s",
+                RUNTIME_VERSION, len(properties), actual_allocation)
 
 
 def _staged_library_names(hdr: Dict[str, str]) -> List[str]:
