@@ -15,23 +15,28 @@ from services.oat_runner import generate_results_csv  # noqa: E402
 
 
 class SourceRowCountsTest(unittest.TestCase):
-    def test_extended_plan_counts_insertions_and_preserves_sizes_and_resulting_rows(self):
+    def test_extended_plan_counts_mutations_and_preserves_sizes_and_resulting_rows(self):
         with tempfile.TemporaryDirectory() as folder:
             root = Path(folder)
             (root/'plan').mkdir()
             (root/'preparation.json').write_text(json.dumps({'source_storage':{'parquet_uncompressed_bytes':25_000_000_000}}))
             (root/'plan'/'manifest.json').write_text(json.dumps({
+                'plan_id':'test-plan',
                 'initial':{'events':{'rows':100}, 'reference':{'rows':2}},
-                'batches':[{'number':2,'operations':[
+                'batches':[{'number':2,'percentages':{'insert_pct':'7','update_pct':'3','delete_pct':'1'},
+                            'operations':[
                     {'kind':'insert','table':'events','after':{'rows':5}},
                     {'kind':'insert','table':'events','after':{'rows':2}},
-                    {'kind':'update','table':'events','after':{'rows':3}},
-                    {'kind':'delete','table':'events','after':None}],
+                    {'kind':'update','table':'events','before':{'rows':3},'after':{'rows':3}},
+                    {'kind':'delete','table':'events','before':{'rows':1},'after':None}],
                     'source_rows':{'events':106,'reference':2}}]}))
             counts = collect_extended_source_row_counts(folder)
             self.assertEqual(counts['batches']['1']['total_rows'],102)
             self.assertEqual(counts['batches']['2']['total_rows'],7)
             self.assertEqual(counts['batches']['2']['tables'],{'events':7})
+            self.assertEqual(counts['plan_id'], 'test-plan')
+            self.assertEqual(counts['batches']['2']['operation_rows'],
+                             {'insert':{'events':7}, 'update':{'events':3}, 'delete':{'events':1}})
             self.assertEqual(counts['batches']['2']['resulting_tables'],{'events':106,'reference':2})
             self.assertEqual(counts['preparation']['source_storage']['parquet_uncompressed_bytes'],25_000_000_000)
 
