@@ -43,7 +43,7 @@ FROM duckdb-openivm-toolchain:ubuntu22.04-gcc13 AS openivm-builder
 WORKDIR /src
 
 ARG OPENIVM_REPO=https://github.com/ila/openivm.git
-ARG OPENIVM_COMMIT=06fbf82f6e3f14fb9fe1d7ff49c662a5fcd223e4
+ARG OPENIVM_COMMIT=1a6310bc1c98bd7251e8177031683249fe20e9c0
 
 # The OpenIVM revision pins matching DuckDB 2.0 and LPTS submodules.
 RUN git init -q && \
@@ -77,7 +77,7 @@ FROM eclipse-temurin:17-jdk AS spark-ext-builder
 
 ARG UBUNTU_MIRROR=http://archive.ubuntu.com/ubuntu
 ARG OPENIVM_SPARK_REPO=https://github.com/mdrakiburrahman/openivm-spark.git
-ARG OPENIVM_SPARK_COMMIT=d0a926fd2211e5b2757ac56e7baf8c4c24b59949
+ARG OPENIVM_SPARK_COMMIT=f18b9c221576adc23e08312bb05339b9f7424acb
 ARG SBT_VERSION=1.9.7
 
 ENV DEBIAN_FRONTEND=noninteractive
@@ -139,7 +139,7 @@ RUN test -s /tmp/openivm-extension.jar && \
 # -----------------------------------------------------------------------------
 FROM ubuntu:22.04
 
-ARG OPENIVM_SPARK_COMMIT=d0a926fd2211e5b2757ac56e7baf8c4c24b59949
+ARG OPENIVM_SPARK_COMMIT=f18b9c221576adc23e08312bb05339b9f7424acb
 LABEL org.openivm.spark.commit="${OPENIVM_SPARK_COMMIT}"
 
 # Cache-bust key: hash of the Dockerfile, toolchain image and any optional patches. The orchestrator
