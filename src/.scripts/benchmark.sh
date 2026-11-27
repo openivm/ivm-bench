@@ -176,11 +176,27 @@ trap 'exit 130' INT
 trap 'exit 143' TERM
 
 echo "=== Starting benchmark-server ==="
+# CI runners can have a stale listener on host port 9000, so CI asks Docker for a free host port.
+if [[ "${BENCHMARK_SERVER_DYNAMIC_PORT:-0}" == "1" ]]; then
+  export BENCHMARK_SERVER_PORT_MAPPING="9000"
+fi
 docker compose -f "$COMPOSE_FILE" -p "$SERVER_PROJECT" up -d --build
+
+SERVER_URL="http://localhost:9000"
+if [[ "${BENCHMARK_SERVER_DYNAMIC_PORT:-0}" == "1" ]]; then
+  SERVER_ADDRESS="$(docker compose -f "$COMPOSE_FILE" -p "$SERVER_PROJECT" port benchmark-server 9000 | head -n 1)"
+  SERVER_PORT="${SERVER_ADDRESS##*:}"
+  if [[ ! "$SERVER_PORT" =~ ^[0-9]+$ ]]; then
+    echo "ERROR: Could not resolve the benchmark-server host port (got: ${SERVER_ADDRESS})." >&2
+    exit 1
+  fi
+  SERVER_URL="http://localhost:${SERVER_PORT}"
+  echo "benchmark-server published at ${SERVER_URL}"
+fi
 
 HEALTH_OK=0
 for i in $(seq 1 $HEALTH_RETRIES); do
-  if curl -sf http://localhost:9000/health >/dev/null 2>&1; then
+  if curl -sf "${SERVER_URL}/health" >/dev/null 2>&1; then
     HEALTH_OK=1
     break
   fi
@@ -211,7 +227,7 @@ while IFS= read -r line; do
       fi
       ;;
   esac
-done < <(curl -sfN "http://localhost:9000/benchmark/stream" 2>/dev/null)
+done < <(curl -sfN "${SERVER_URL}/benchmark/stream" 2>/dev/null)
 
 echo ""
 echo "=== OAT sweep finished — status: ${FINAL_STATUS} ==="

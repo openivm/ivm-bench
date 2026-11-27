@@ -299,6 +299,7 @@ jobs:
       - name: "🏁 Run benchmark"
         id: benchmark
         env:
+          BENCHMARK_SERVER_DYNAMIC_PORT: "1"
           IMDS_RELAY_TEMPORARY_SAS_URL: ${{ secrets.IMDS_RELAY_TEMPORARY_SAS_URL }}
         run: bash src/.scripts/benchmark.sh
 

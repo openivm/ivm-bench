@@ -111,8 +111,10 @@ class BuildCheckoutTest(unittest.TestCase):
             docker = tmp / "docker"
             docker.write_text("""#!/bin/bash
 echo "$*" >> "$CALLS"
+[[ "$*" == *" up -d --build" ]] && echo "port-mapping=$BENCHMARK_SERVER_PORT_MAPPING" >> "$CALLS"
 printf '%s' "$IMDS_RELAY_TEMPORARY_SAS_URL" > "$RELAY_VALUE"
 case "$*" in
+  *" port benchmark-server 9000") echo 0.0.0.0:49153 ;;
   "ps -aq --filter label=org.ivm-bench.run-id=$IVM_BENCH_RUN_ID") echo owned-container ;;
   "network ls -q --filter label=org.ivm-bench.run-id=$IVM_BENCH_RUN_ID") echo owned-network ;;
   "rm -f owned-container") exit 1 ;;
@@ -121,6 +123,7 @@ esac
             docker.chmod(0o755)
             curl = tmp / "curl"
             curl.write_text("""#!/bin/bash
+echo "curl $*" >> "$CALLS"
 if [[ "$*" == *benchmark/stream* ]]; then
   touch "$STREAMING"
   sleep 2
@@ -134,6 +137,7 @@ fi
                    "CALLS": str(tmp / "calls"), "STREAMING": str(tmp / "streaming"),
                    "RELAY_VALUE": str(tmp / "relay_value"),
                    "IMDS_RELAY_TEMPORARY_SAS_URL": "injected-sender-url",
+                   "BENCHMARK_SERVER_DYNAMIC_PORT": "1",
                    "REPO_ROOT": str(root),
                    "GITHUB_ENV": str(tmp / "github_env"), "OPENIVM_UBUNTU_MIRROR": "unused",
                    "BENCHMARK_EXPERIMENTS_FILE": str(root / "experiments.json")}
@@ -156,6 +160,9 @@ fi
                 self.assertIn(f"network ls -q --filter label=org.ivm-bench.run-id={run_id}", calls)
                 self.assertIn("rm -f owned-container", calls)
                 self.assertIn("network rm owned-network", calls)
+                self.assertIn("port-mapping=9000\n", calls)
+                self.assertIn("http://localhost:49153/health", calls)
+                self.assertIn("http://localhost:49153/benchmark/stream", calls)
                 self.assertNotIn("unrelated", calls)
             finally:
                 if process.poll() is None:
