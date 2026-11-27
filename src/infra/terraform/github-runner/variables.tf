@@ -33,12 +33,12 @@ variable "ssh_public_key" {
 
 variable "instance_sku" {
   type        = string
-  description = "VMSS instance SKU (e.g. Standard_E32as_v4, Standard_E16as_v4). Overrides the module default."
-  default     = "Standard_E32as_v4"
+  description = "VMSS instance SKU for the benchmark runners."
+  default     = "Standard_E32as_v7"
 }
 
 variable "instance_count" {
   type        = number
   description = "Number of VMSS instances. The VMSS is not autoscaled, so this is both the current and the max node count."
-  default     = 2
+  default     = 3
 }
