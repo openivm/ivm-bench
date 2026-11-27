@@ -83,6 +83,27 @@ class AugmentedTpcdiTest(unittest.TestCase):
         self.assertEqual(parse_experiments_json('{"experiments":[{}]}')[0]
                          .to_compose_env()["OPENIVM_CAPTURE_SQL"], "0")
 
+    def test_figure_one_window_settings_are_scoped_to_the_experiment(self):
+        recipe = BENCHMARK_SERVER / "experiments" / "fig1-window-parity-sf100.json"
+        (experiment,) = parse_experiments_json(recipe.read_text(encoding="utf-8"))
+        env = experiment.to_compose_env()
+        self.assertEqual(experiment.engines, ["spark-openivm", "fabric-openivm-jvm-35"])
+        self.assertEqual((experiment.scale_factor, experiment.batch_1_pct,
+                          experiment.batch_2_pct, experiment.batch_3_pct),
+                         (100, "100", "1", "0.01"))
+        self.assertEqual(env["SPARK_DBT_THREADS"], "4")
+        self.assertTrue(experiment.feature_flags.openivm_validate)
+        self.assertEqual(env["OPENIVM_RUNNING_WINDOWS"], "true")
+        self.assertEqual(env["OPENIVM_GROUPED_WINDOWS"], "true")
+        self.assertEqual(env["OPENIVM_COMPILE_CACHE"], "true")
+        self.assertEqual(json.loads(env["FABRIC_SPARK_EXECUTOR_RANGE"]), [4, 9])
+        (default,) = parse_experiments_json('{"experiments":[{}]}')
+        env = default.to_compose_env()
+        self.assertEqual(env["OPENIVM_RUNNING_WINDOWS"], "false")
+        self.assertEqual(env["OPENIVM_GROUPED_WINDOWS"], "false")
+        self.assertEqual(env["OPENIVM_COMPILE_CACHE"], "false")
+        self.assertEqual(env["FABRIC_SPARK_EXECUTOR_RANGE"], "")
+
     def test_databricks_refresh_policy_works_for_standard_tpcdi(self):
         experiment = parse_experiments_json(json.dumps({
             "experiments": [{

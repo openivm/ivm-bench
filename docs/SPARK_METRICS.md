@@ -20,3 +20,13 @@ Query it via the DuckDB-backed `benchmark-server` routes
 (`GET /metrics/kpis`, `GET /metrics/diff`, `POST /metrics/query`,
 `GET /metrics/artifact`) or by reading the Parquet directly — both are a stable
 contract for downstream (`openivm-spark`) consumption.
+
+### Extended diagnostics
+
+Set `openivm_profile_refresh` to `2` in manual CI, or set
+`feature_flags.extended_spark_profile` in an experiment file. Spark archives
+execution timestamps, plans, and stage events before cleanup. The execution
+sidecar labels setup, timed work, and post-batch work separately. Fabric
+exports executed SQL plans, jobs, and stages from Spark History into
+`mount/stats/<SF>/<engine>/` before deleting the compute lakehouse. The
+benchmark uses the standard batch timers in both modes.

@@ -50,9 +50,13 @@ class FeatureFlags:
     openivm_profile_refresh: bool = True
     openivm_capture_sql: bool = False
     openivm_query_log: bool = True
+    openivm_running_windows: bool = False
+    openivm_grouped_windows: bool = False
+    openivm_compile_cache: bool = False
     storage_metrics: bool = True
     preserve_raw: bool = False  # no-op inside OAT mode (per-experiment cleanup)
     spark_metrics_capture: bool = True
+    extended_spark_profile: bool = False
     # compiler-bench: off by default. When on, the experiment runs the
     # incrementalizability survey INSTEAD of the timed batches — thousands of
     # views would otherwise pollute the timings it shares an engine with.
@@ -80,11 +84,15 @@ class FeatureFlags:
             ),
             openivm_capture_sql=flag("OPENIVM_CAPTURE_SQL", defaults.openivm_capture_sql),
             openivm_query_log=flag("OPENIVM_QUERY_LOG", defaults.openivm_query_log),
+            openivm_running_windows=flag("OPENIVM_RUNNING_WINDOWS", defaults.openivm_running_windows),
+            openivm_grouped_windows=flag("OPENIVM_GROUPED_WINDOWS", defaults.openivm_grouped_windows),
+            openivm_compile_cache=flag("OPENIVM_COMPILE_CACHE", defaults.openivm_compile_cache),
             storage_metrics=flag("STORAGE_METRICS", defaults.storage_metrics),
             preserve_raw=flag("PRESERVE_RAW", defaults.preserve_raw),
             spark_metrics_capture=flag(
                 "SPARK_METRICS_CAPTURE", defaults.spark_metrics_capture
             ),
+            extended_spark_profile=flag("EXTENDED_SPARK_PROFILE", defaults.extended_spark_profile),
             compiler_bench=flag("COMPILER_BENCH", defaults.compiler_bench),
             cost_model_bench=flag("COST_MODEL_BENCH", defaults.cost_model_bench),
         )
@@ -95,9 +103,13 @@ class FeatureFlags:
             "OPENIVM_PROFILE_REFRESH": "1" if self.openivm_profile_refresh else "0",
             "OPENIVM_CAPTURE_SQL": "1" if self.openivm_capture_sql else "0",
             "OPENIVM_QUERY_LOG": "1" if self.openivm_query_log else "0",
+            "OPENIVM_RUNNING_WINDOWS": str(self.openivm_running_windows).lower(),
+            "OPENIVM_GROUPED_WINDOWS": str(self.openivm_grouped_windows).lower(),
+            "OPENIVM_COMPILE_CACHE": str(self.openivm_compile_cache).lower(),
             "STORAGE_METRICS": "1" if self.storage_metrics else "0",
             "PRESERVE_RAW": "1" if self.preserve_raw else "0",
             "SPARK_METRICS_CAPTURE": "1" if self.spark_metrics_capture else "0",
+            "EXTENDED_SPARK_PROFILE": "1" if self.extended_spark_profile else "0",
             "COMPILER_BENCH": "1" if self.compiler_bench else "0",
             "COST_MODEL_BENCH": "1" if self.cost_model_bench else "0",
         }
@@ -130,6 +142,8 @@ class SparkTunables:
     shuffle_partitions: Optional[int] = None
     default_parallelism: Optional[int] = None
     dbt_threads: Optional[int] = None
+    # Min/max dynamic executors for the experiment's Fabric Environment.
+    fabric_executor_range: Optional[List[int]] = None
 
     def to_compose_env(self) -> Dict[str, str]:
         env: Dict[str, str] = {}
@@ -141,6 +155,9 @@ class SparkTunables:
             env["SPARK_SUBMIT_SHUFFLE_PARTITIONS"] = str(self.shuffle_partitions)
         if self.default_parallelism is not None:
             env["SPARK_SUBMIT_DEFAULT_PARALLELISM"] = str(self.default_parallelism)
+        env["FABRIC_SPARK_EXECUTOR_RANGE"] = (
+            json.dumps(self.fabric_executor_range) if self.fabric_executor_range is not None else ""
+        )
         if self.dbt_threads is not None:
             env["SPARK_DBT_THREADS"] = str(self.dbt_threads)
         return env
@@ -453,10 +470,16 @@ class ExperimentInputs:
             openivm_profile_refresh=_flag(ff_d.get("openivm_profile_refresh"), base.feature_flags.openivm_profile_refresh),
             openivm_capture_sql=_flag(ff_d.get("openivm_capture_sql"), base.feature_flags.openivm_capture_sql),
             openivm_query_log=_flag(ff_d.get("openivm_query_log"), base.feature_flags.openivm_query_log),
+            openivm_running_windows=_flag(ff_d.get("openivm_running_windows"), base.feature_flags.openivm_running_windows),
+            openivm_grouped_windows=_flag(ff_d.get("openivm_grouped_windows"), base.feature_flags.openivm_grouped_windows),
+            openivm_compile_cache=_flag(ff_d.get("openivm_compile_cache"), base.feature_flags.openivm_compile_cache),
             storage_metrics=_flag(ff_d.get("storage_metrics"), base.feature_flags.storage_metrics),
             preserve_raw=_flag(ff_d.get("preserve_raw"), base.feature_flags.preserve_raw),
             spark_metrics_capture=_flag(
                 ff_d.get("spark_metrics_capture"), base.feature_flags.spark_metrics_capture
+            ),
+            extended_spark_profile=_flag(
+                ff_d.get("extended_spark_profile"), base.feature_flags.extended_spark_profile
             ),
             compiler_bench=_flag(ff_d.get("compiler_bench"), base.feature_flags.compiler_bench),
             cost_model_bench=_flag(
@@ -493,6 +516,7 @@ class ExperimentInputs:
             shuffle_partitions=st_d.get("shuffle_partitions", base.spark_tunables.shuffle_partitions),
             default_parallelism=st_d.get("default_parallelism", base.spark_tunables.default_parallelism),
             dbt_threads=st_d.get("dbt_threads", base.spark_tunables.dbt_threads),
+            fabric_executor_range=st_d.get("fabric_executor_range", base.spark_tunables.fabric_executor_range),
         )
 
         # batch_N_pct accepts either the new explicit name or the legacy

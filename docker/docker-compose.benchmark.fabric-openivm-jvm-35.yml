@@ -36,6 +36,7 @@ services:
       FABRIC_CACHE_LAKEHOUSE_NAME: "${FABRIC_CACHE_LAKEHOUSE_NAME:-ivmbench_cache}"
       FABRIC_STALE_RESOURCE_MAX_AGE_SECONDS: "${FABRIC_STALE_RESOURCE_MAX_AGE_SECONDS:-86400}"
       FABRIC_RUN_ID: "${FABRIC_RUN_ID:-}"
+      FABRIC_SPARK_EXECUTOR_RANGE: "${FABRIC_SPARK_EXECUTOR_RANGE:-}"
       # ── az login --identity via the imds-router sidecar (App Service MSI) ──
       IDENTITY_ENDPOINT: "http://imds-router:${IMDS_ROUTER_PORT:-8080}/metadata/identity/oauth2/token"
       IMDS_METADATA_ENDPOINT: "http://imds-router:${IMDS_ROUTER_PORT:-8080}/metadata/instance?api-version=2021-02-01"
@@ -48,6 +49,9 @@ services:
       # Environment publishing reads these in dbt-server, not benchmark-server.
       OPENIVM_PROFILE_REFRESH: "${OPENIVM_PROFILE_REFRESH:-0}"
       OPENIVM_QUERY_LOG: "${OPENIVM_QUERY_LOG:-0}"
+      OPENIVM_RUNNING_WINDOWS: "${OPENIVM_RUNNING_WINDOWS:-false}"
+      OPENIVM_GROUPED_WINDOWS: "${OPENIVM_GROUPED_WINDOWS:-false}"
+      OPENIVM_COMPILE_CACHE: "${OPENIVM_COMPILE_CACHE:-false}"
       # Locally-generated Delta dirs to stage into the OneLake Files cache.
       RAW_DELTA_DIR: /data/raw/delta
     volumes:

@@ -23,4 +23,5 @@ psycopg[binary]>=3.2
 # Batch-1 RisingWave loading stages resolved Delta snapshots through the local
 # Verify immutable Iceberg metadata in the MinIO warehouse.
 boto3>=1.35
-sqlglot>=26.0
+# Keep catalog translation stable; 30.34.0 introduces TRY_CAST warnings.
+sqlglot==30.33.0

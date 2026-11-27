@@ -27,3 +27,25 @@ Alternatively, feed the URL file to `gh secret set` via stdin. Renew the secret
 before it expires; the router cannot renew it. Other cloud credentials stay in
 `BASE64_ENV`; the temporary URL is injected separately and takes precedence over
 `.env`. See [CI inputs and experiment presets](CI_VS_GCI.md) for larger runs.
+
+## Choose a benchmark machine
+
+In the **Run workflow** menu for CI, leave `runner` at `any` to use the first
+available benchmark machine. Select `ivm-bench-vmss-runner000000` or
+`ivm-bench-vmss-runner000001` to wait for that machine. For the CLI, add
+`-f runner=ivm-bench-vmss-runner000001` to the dispatch command. Each runner
+needs its name as a custom GitHub Actions label, including after re-registration.
+
+Use `schedule=parallel` for parallel engine execution. Experiment files still
+accept the legacy `parallel` setting.
+
+## Build the Spark and Fabric image locally
+
+The benchmark harness reuses the tagged Ubuntu 22.04/GCC 13 toolchain image for
+DuckDB and Spark/Fabric, and builds it on a fresh machine. To build the
+Spark/Fabric image directly with Docker Compose, prepare the same toolchain first.
+
+```bash
+docker compose -f docker/docker-compose.duckdb-openivm-build.yml build duckdb-openivm-toolchain
+docker compose -f docker/docker-compose.spark-openivm-build.yml build
+```

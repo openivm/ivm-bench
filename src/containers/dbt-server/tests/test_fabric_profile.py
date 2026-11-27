@@ -1,8 +1,11 @@
 import csv
+import gzip
 import io
+import json
 import os
 import re
 import sys
+import tempfile
 import threading
 import types
 import unittest
@@ -15,53 +18,47 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from services import fabric, spark_openivm_profile, spark_openivm_query_log
 
 
-class FabricRuntimePinTest(unittest.TestCase):
-    def setUp(self):
-        self.enterContext(patch("services.fabric._env_base", return_value="https://example.invalid/environment"))
+class FabricSparkHistoryTest(unittest.TestCase):
+    def test_exports_paged_sql_plans_and_stage_metrics(self):
+        sessions = {"value": [{"livyId": "session", "sparkApplicationId": "app", "state": "Succeeded"}]}
+        responses = [sessions, [{"id": i} for i in range(100)], [{"id": 100, "nodes": []}],
+                     [{"stageId": 1, "inputRecords": 30}], [{"jobId": 1}]]
+        transport = self.enterContext(patch("services.fabric._fabric_req"))
+        transport.side_effect = [Mock(**{"json.return_value": payload}) for payload in responses]
+        self.enterContext(patch("services.fabric._workspace_base", return_value="https://example.invalid/workspace"))
+        self.enterContext(patch("services.fabric._compute_lakehouse_id", return_value="lakehouse"))
         self.enterContext(patch("services.fabric._fabric_headers", return_value={}))
-        self.request = self.enterContext(patch("services.fabric._fabric_req"))
-        self.properties = {"spark.openivm.enabled": "true"}
-        self.initial = Mock(status_code=200)
-        self.initial.json.return_value = {"runtimeVersion": "2.0"}
-        self.updated = Mock(status_code=200)
-        self.updated.json.return_value = {"runtimeVersion": "1.3", "sparkProperties": [
-            {"key": "spark.openivm.enabled", "value": "true"}
-        ]}
-        self.request.side_effect = [self.initial, Mock(status_code=200), self.updated]
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "fabric-spark-history-batch2.jsonl.gz"
+            summary = fabric.export_spark_history(path)
+            exported_summary = json.loads((Path(tmp) / "fabric-spark-history-batch2-summary.json").read_text())
+            self.assertEqual(exported_summary, summary)
+            with gzip.open(path, "rt") as f:
+                rows = [json.loads(line) for line in f]
+        self.assertEqual(summary["status"], "ok")
+        self.assertEqual(summary["counts"], {"sessions": 1, "sql": 101, "jobs": 1, "stages": 1})
+        self.assertEqual(transport.call_args_list[2].kwargs["params"]["offset"], 100)
+        self.assertTrue(transport.call_args_list[1].args[1].endswith("/livySessions/session/applications/app/sql"))
+        self.assertIn({"kind": "stages", "application": "app", "data": {"stageId": 1, "inputRecords": 30}}, rows)
 
-    def test_pin_uses_stable_contract_and_verifies_properties(self):
-        fabric._stage_spark_compute(self.properties)
-        args, kwargs = self.request.call_args_list[1]
-        self.assertEqual(args[0], "PATCH")
-        self.assertEqual(kwargs["params"], {"beta": "false"})
-        self.assertEqual(kwargs["json"], {"runtimeVersion": "1.3", "sparkProperties": [
-            {"key": "spark.openivm.enabled", "value": "true"}
-        ]})
-        self.assertEqual(self.request.call_count, 3)
 
-    def test_runtime_drift_is_rejected(self):
-        self.updated.json.return_value["runtimeVersion"] = "2.0"
-        with self.assertRaisesRegex(RuntimeError, "runtime pin not applied"):
-            fabric._stage_spark_compute(self.properties)
-
-    def test_missing_or_wrong_property_is_rejected(self):
-        self.updated.json.return_value["sparkProperties"] = []
-        with self.assertRaisesRegex(RuntimeError, "Spark properties not applied"):
-            fabric._stage_spark_compute(self.properties)
-
-    def test_baseline_also_pins_runtime_and_requires_publish_success(self):
-        stage = self.enterContext(patch("services.fabric._stage_spark_compute"))
-        self.request.side_effect = None
-        self.request.return_value = Mock(status_code=400)
-        with self.assertRaisesRegex(RuntimeError, "baseline environment publish failed"):
-            fabric.publish_empty_environment()
-        stage.assert_called_once_with({})
-
-    def test_async_compute_update_is_awaited_before_readback(self):
-        poll = self.enterContext(patch("services.fabric._lro_poll"))
-        self.request.side_effect = [self.initial, Mock(status_code=202, headers={"Location": "https://example.invalid/operation"}), self.updated]
-        fabric._stage_spark_compute(self.properties)
-        poll.assert_called_once_with("https://example.invalid/operation")
+    def test_exports_requested_executor_shape_for_pinned_runs(self):
+        self.enterContext(patch.dict(os.environ, {"FABRIC_SPARK_EXECUTOR_RANGE": "[4,9]"}))
+        self.enterContext(patch("services.fabric._workspace_base", return_value="https://example.invalid/workspace"))
+        self.enterContext(patch("services.fabric._compute_lakehouse_id", return_value="lakehouse"))
+        self.enterContext(patch("services.fabric._fabric_headers", return_value={}))
+        transport = self.enterContext(patch("services.fabric._fabric_req"))
+        resources = {"executorCores": 8, "numExecutors": 4, "dynamicAllocationMaxExecutors": 9}
+        responses = [{"value": [{"livyId": "session", "sparkApplicationId": "app"}]},
+                     resources, [{"id": 0}], [], []]
+        transport.side_effect = [Mock(**{"json.return_value": payload}) for payload in responses]
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "history.jsonl.gz"
+            self.assertEqual(fabric.export_spark_history(path)["status"], "ok")
+            with gzip.open(path, "rt") as export:
+                session = json.loads(next(export))["data"]
+        self.assertEqual({key: session[key] for key in resources}, resources)
+        self.assertTrue(transport.call_args_list[1].args[1].endswith("/livySessions/session"))
 
 
 class FabricCursorOwnershipTest(unittest.TestCase):

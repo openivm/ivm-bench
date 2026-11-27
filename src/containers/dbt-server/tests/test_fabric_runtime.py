@@ -1,3 +1,4 @@
+import os
 import sys
 import unittest
 from pathlib import Path
@@ -30,6 +31,28 @@ class FabricRuntimePinTest(unittest.TestCase):
             {"key": "spark.openivm.enabled", "value": "true"}
         ]})
         self.assertEqual(self.request.call_count, 3)
+
+    def test_executor_allocation_is_staged_and_verified(self):
+        allocation = {"enabled": True, "minExecutors": 4, "maxExecutors": 9}
+        self.enterContext(patch.dict(os.environ, {"FABRIC_SPARK_EXECUTOR_RANGE": "[4,9]"}))
+        self.updated.json.return_value["dynamicExecutorAllocation"] = allocation.copy()
+        fabric._stage_spark_compute(self.properties)
+        payload = self.request.call_args_list[1].kwargs["json"]
+        self.assertEqual(payload["dynamicExecutorAllocation"], allocation)
+
+    def test_executor_allocation_drift_is_rejected(self):
+        self.enterContext(patch.dict(os.environ, {"FABRIC_SPARK_EXECUTOR_RANGE": "[4,9]"}))
+        self.updated.json.return_value["dynamicExecutorAllocation"] = {
+            "enabled": True, "minExecutors": 1, "maxExecutors": 9,
+        }
+        with self.assertRaisesRegex(RuntimeError, "executor allocation pin not applied"):
+            fabric._stage_spark_compute(self.properties)
+
+    def test_inverted_executor_range_is_rejected_before_api_call(self):
+        self.enterContext(patch.dict(os.environ, {"FABRIC_SPARK_EXECUTOR_RANGE": "[9,4]"}))
+        with self.assertRaisesRegex(ValueError, "requires positive"):
+            fabric._stage_spark_compute(self.properties)
+        self.request.assert_not_called()
 
     def test_runtime_drift_is_rejected(self):
         self.updated.json.return_value["runtimeVersion"] = "2.0"

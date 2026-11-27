@@ -31,11 +31,12 @@ from services.engine_runner import EngineRunner, OpenIvmValidationError
 from services.resource_calc import compute_engine_configs
 
 logger = logging.getLogger(__name__)
+OPENIVM_TOOLCHAIN_IMAGE = "duckdb-openivm-toolchain:ubuntu22.04-gcc13"
 
 
-def _spark_builder_source_hash(dockerfile: str) -> str:
-    """Invalidate the builder whenever its Dockerfile or optional patches change."""
-    digest = hashlib.sha256()
+def _spark_builder_source_hash(dockerfile: str, toolchain_id: str) -> str:
+    """Key the builder on its sources and the native toolchain image."""
+    digest = hashlib.sha256(toolchain_id.encode("utf-8"))
     with open(dockerfile, "rb") as f:
         digest.update(f.read())
     patches = os.path.join(os.path.dirname(dockerfile), "patches")
@@ -111,6 +112,7 @@ class Orchestrator:
         self._log_queue: queue.Queue[str] = queue.Queue()
         self._running = False
         self._lock = threading.Lock()
+        self._openivm_toolchain_lock = threading.Lock()
         self._thread: Optional[threading.Thread] = None
         self._benchmark_id: Optional[str] = None
 
@@ -678,8 +680,7 @@ class Orchestrator:
                 "from source (~5-10 min)"
             )
             with self._heartbeat("duckdb-openivm-build/build"):
-                # Keep the compiler stage tagged across CI's dangling-image prune.
-                mgr.build(services=["duckdb-openivm-toolchain"])
+                self._openivm_toolchain_id()
                 mgr.build(services=["duckdb-openivm-builder"])
         else:
             self.emit(f"  [duckdb-openivm-build] Reusing image (dockerfile {dockerfile_hash[:7]})")
@@ -696,6 +697,22 @@ class Orchestrator:
             raise RuntimeError("DuckDB-OpenIVM binary not found at mount/bin/duckdb-openivm/duckdb")
 
         self.emit("  [duckdb-openivm-build] Complete")
+
+    def _openivm_toolchain_id(self) -> str:
+        """Build the shared compiler image once on a fresh runner."""
+        repo = self._config.repo_dir
+        command = ["docker", "image", "inspect", OPENIVM_TOOLCHAIN_IMAGE, "--format", "{{.Id}}"]
+        with self._openivm_toolchain_lock:
+            result = subprocess.run(command, capture_output=True, text=True, cwd=repo)
+            if result.returncode != 0:
+                manager = DockerManager(
+                    os.path.join(repo, "docker/docker-compose.duckdb-openivm-build.yml"),
+                    project_name="duckdb-openivm-build",
+                    cwd=repo,
+                )
+                manager.build(services=["duckdb-openivm-toolchain"])
+                result = subprocess.run(command, capture_output=True, text=True, cwd=repo, check=True)
+            return result.stdout.strip()
 
     def _compiler_bench_enabled(self) -> bool:
         return os.environ.get("COMPILER_BENCH", "0").strip().lower() in (
@@ -830,18 +847,16 @@ class Orchestrator:
     def _run_spark_openivm_build(self) -> None:
         """Build the spark-openivm assembly jar + duckdb extension + CLI (idempotent).
 
-        Mirrors `_run_duckdb_openivm_build`: regex-parses the pinned
-        OPENIVM_SPARK_COMMIT from the Dockerfile, reuses the existing
-        builder image when its `org.openivm.spark.commit` label still
-        matches, otherwise rebuilds.
+        Reuse the builder image when its source and toolchain hash matches.
         """
         self.emit("  [spark-openivm-build] Building")
         repo = self._config.repo_dir
         dockerfile = os.path.join(
             repo, "src/containers/spark-openivm-build/Dockerfile"
         )
-        # Include optional local patches in the image key when present.
-        dockerfile_hash = _spark_builder_source_hash(dockerfile)
+        with self._heartbeat("spark-openivm-build/toolchain"):
+            toolchain_id = self._openivm_toolchain_id()
+        dockerfile_hash = _spark_builder_source_hash(dockerfile, toolchain_id)
         mgr = DockerManager(
             os.path.join(repo, "docker/docker-compose.spark-openivm-build.yml"),
             project_name="spark-openivm-build",
@@ -1919,6 +1934,7 @@ class Orchestrator:
             summary = spark_metrics.process(
                 repo_dir=repo, sf=sf, benchmark_id=self._benchmark_id or "",
                 run_id=run_id, engines=spark_engines, emit=self.emit,
+                extended_profile=inputs.feature_flags.extended_spark_profile,
             )
         except Exception as e:
             self.emit(f"  [spark-metrics] post-processing failed: {e}")

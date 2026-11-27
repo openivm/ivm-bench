@@ -17,12 +17,12 @@
 #    1. openivm-builder    — builds the pinned DuckDB 2.0 CLI and extension.
 #    2. spark-ext-builder  — JDK 17 + sbt; clones openivm-spark @ pinned
 #                            SHA and runs `sbt ivmExtension/assembly`.
-#    3. final              — Ubuntu 24.04 runtime; aggregates all three
+#    3. final              — Ubuntu 22.04 runtime; aggregates all three
 #                            artifacts at /opt/spark-openivm/. entrypoint
 #                            copies them to ${OUTPUT_DIR:-/output}/.
 #
-#  This benchmark holds OPENIVM_SPARK_COMMIT fixed while testing the native
-#  DuckDB 2.0 compiler from the same OpenIVM revision as the DuckDB engine.
+#  The Spark and Fabric images use the same native OpenIVM revision as the
+#  DuckDB OpenIVM image.
 #  The native revision pins DuckDB, LPTS, and CI tools through its submodules.
 # =============================================================================
 
@@ -35,40 +35,15 @@
 # the `duckdb` CLI and dlopens `openivm.duckdb_extension`); a 24.04-built binary
 # fails on 22.04 with `GLIBC_2.38 not found` / `GLIBCXX_3.4.32 not found`, which
 # crashes every per-view compile -> COMPILE_FAILED -> FULL_REFRESH for all views.
-# Use GCC 13 on Ubuntu 22.04, matching the benchmark's native OpenIVM builder.
+# Reuse the GCC 13 toolchain built by the DuckDB OpenIVM builder.
 # Keep libstdc++ DYNAMIC (no -static-libstdc++): the CLI and the loadable
 # extension must share a single libstdc++.
-FROM ubuntu:22.04 AS openivm-builder
-
-ARG UBUNTU_MIRROR=http://archive.ubuntu.com/ubuntu
-ARG OPENIVM_REPO=https://github.com/ila/openivm.git
-ARG OPENIVM_COMMIT=a7fc36a680303abdba2026da53f255def87b0be0
-
-ENV DEBIAN_FRONTEND=noninteractive
-
-RUN printf 'Acquire::Retries "5";\nAcquire::ForceIPv4 "true";\nAcquire::http::Timeout "30";\nAcquire::https::Timeout "30";\n' > /etc/apt/apt.conf.d/80-download-retries
-
-RUN if [ "${UBUNTU_MIRROR}" != "http://archive.ubuntu.com/ubuntu" ]; then \
-        if [ -f /etc/apt/sources.list ]; then \
-            sed -i "s|http://archive.ubuntu.com/ubuntu|${UBUNTU_MIRROR}|g; s|http://security.ubuntu.com/ubuntu|${UBUNTU_MIRROR}|g" /etc/apt/sources.list; \
-        fi; \
-        if [ -f /etc/apt/sources.list.d/ubuntu.sources ]; then \
-            sed -i "s|http://archive.ubuntu.com/ubuntu|${UBUNTU_MIRROR}|g; s|http://security.ubuntu.com/ubuntu|${UBUNTU_MIRROR}|g" /etc/apt/sources.list.d/ubuntu.sources; \
-        fi; \
-    fi && \
-    apt-get update -o Acquire::ForceIPv4=true -o Acquire::Retries=3 -o Acquire::http::Timeout=60 && \
-    apt-get install -y --no-install-recommends \
-        build-essential cmake ninja-build git ca-certificates \
-        python3 python3-pip libssl-dev pkg-config zip unzip curl \
-        software-properties-common gpg-agent && \
-    add-apt-repository -y ppa:ubuntu-toolchain-r/test && \
-    apt-get update -o Acquire::ForceIPv4=true -o Acquire::Retries=3 -o Acquire::http::Timeout=60 && \
-    apt-get install -y --no-install-recommends gcc-13 g++-13 && \
-    update-alternatives --install /usr/bin/gcc gcc /usr/bin/gcc-13 100 && \
-    update-alternatives --install /usr/bin/g++ g++ /usr/bin/g++-13 100 && \
-    rm -rf /var/lib/apt/lists/*
+FROM duckdb-openivm-toolchain:ubuntu22.04-gcc13 AS openivm-builder
 
 WORKDIR /src
+
+ARG OPENIVM_REPO=https://github.com/ila/openivm.git
+ARG OPENIVM_COMMIT=1a6310bc1c98bd7251e8177031683249fe20e9c0
 
 # The OpenIVM revision pins matching DuckDB 2.0 and LPTS submodules.
 RUN git init -q && \
@@ -102,7 +77,7 @@ FROM eclipse-temurin:17-jdk AS spark-ext-builder
 
 ARG UBUNTU_MIRROR=http://archive.ubuntu.com/ubuntu
 ARG OPENIVM_SPARK_REPO=https://github.com/mdrakiburrahman/openivm-spark.git
-ARG OPENIVM_SPARK_COMMIT=2d4c0a00c9c9f2887e5719ed1f85aa410eb54d8b
+ARG OPENIVM_SPARK_COMMIT=013aec4951bb59fc73fab6d35032cba2dc874ca5
 ARG SBT_VERSION=1.9.7
 
 ENV DEBIAN_FRONTEND=noninteractive
@@ -164,10 +139,10 @@ RUN test -s /tmp/openivm-extension.jar && \
 # -----------------------------------------------------------------------------
 FROM ubuntu:22.04
 
-ARG OPENIVM_SPARK_COMMIT=2d4c0a00c9c9f2887e5719ed1f85aa410eb54d8b
+ARG OPENIVM_SPARK_COMMIT=013aec4951bb59fc73fab6d35032cba2dc874ca5
 LABEL org.openivm.spark.commit="${OPENIVM_SPARK_COMMIT}"
 
-# Cache-bust key: hash of the Dockerfile and any optional local patches. The orchestrator
+# Cache-bust key: hash of the Dockerfile, toolchain image and any optional patches. The orchestrator
 # reuses this builder image only when the label still matches.
 ARG SPARK_OPENIVM_DOCKERFILE_HASH=""
 LABEL org.openivm.spark.dockerfile_hash="${SPARK_OPENIVM_DOCKERFILE_HASH}"

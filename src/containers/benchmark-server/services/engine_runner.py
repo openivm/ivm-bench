@@ -457,6 +457,7 @@ class EngineRunner:
                 ("collect_feldera_debug", self._collect_feldera_debug),
                 ("capture_logs", self._capture_logs),
                 ("databricks_enzyme_drop_mvs", self._databricks_enzyme_drop_mvs),
+                ("fabric_spark_history", self._export_fabric_spark_history),
                 ("fabric_cleanup", self._fabric_cleanup),
                 ("engine_mgr.down", lambda: self._engine_mgr.down(volumes=name == "materialize-emulator")),
                 ("cleanup_staging", self._cleanup_staging),
@@ -684,6 +685,26 @@ class EngineRunner:
         except Exception as e:
             self._emit(f"[databricks-enzyme] Post-run cleanup-schema WARN: {e}")
 
+    def _export_fabric_spark_history(self, batch_num: int | None = None) -> None:
+        if self._engine.name not in ("fabric-openivm-jvm-35", "fabric-jvm-35"):
+            return
+        if os.environ.get("EXTENDED_SPARK_PROFILE") != "1":
+            return
+        endpoint = f"{self._dbt_url}/metrics/fabric/spark-history"
+        extra = self._result.extra
+        if batch_num is not None:
+            endpoint += f"/{batch_num}"
+            extra = self._result.batches[batch_num - 1].extra
+        start = time.monotonic()
+        try:
+            response = requests.post(endpoint, timeout=600)
+            response.raise_for_status()
+            summary = response.json()
+        except (requests.RequestException, ValueError) as exc:
+            summary = {"status": "unavailable", "error": str(exc)}
+        extra["spark_history"] = {**summary, "export_wall_s": time.monotonic() - start}
+        self._emit(f"[{self._engine.name}] Spark history export: {summary}")
+
     def _fabric_cleanup(self) -> None:
         """End-of-run: tear down this run's compute lakehouse + environment so no
         experiment leaves stale resources behind (the shared cache lakehouse is
@@ -877,6 +898,10 @@ class EngineRunner:
         self._emit(f"[{name}] Batch {batch_num} starting")
         self._persist_batch_result(batch_num, batch)
 
+        extended_profile = os.environ.get("EXTENDED_SPARK_PROFILE") == "1"
+        if extended_profile:
+            batch.extra["profile_window_start_ms"] = int(time.time() * 1000)
+
         try:
             # Append data for batches 2/3. DuckDB and DuckDB-OpenIVM manage
             # DuckLake source appends inside their measured batch path; Feldera
@@ -958,6 +983,9 @@ class EngineRunner:
                 batch.extra["correctness_validation"] = response.json()
 
             if run_id and batch.status != "failed":
+                # Fabric's retained Spark history rolls forward. Validation adds
+                # enough SQL and stages to displace the timed refreshes.
+                self._export_fabric_spark_history(batch_num)
                 if name == "duckdb-openivm":
                     if os.environ.get("OPENIVM_VALIDATE", "0") != "0":
                         self._validate_duckdb_openivm(run_id, batch_num)
@@ -1018,6 +1046,8 @@ class EngineRunner:
             raise
         finally:
             self._ensure_cpu_measurement_status(batch_num)
+            if extended_profile:
+                batch.extra["profile_window_end_ms"] = int(time.time() * 1000)
             # Always persist batch result to benchmark-server DB
             self._persist_batch_result(batch_num, batch)
 
