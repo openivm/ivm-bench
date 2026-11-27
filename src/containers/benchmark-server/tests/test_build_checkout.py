@@ -111,10 +111,8 @@ class BuildCheckoutTest(unittest.TestCase):
             docker = tmp / "docker"
             docker.write_text("""#!/bin/bash
 echo "$*" >> "$CALLS"
-[[ "$*" == *" up -d --build" ]] && echo "port-mapping=$BENCHMARK_SERVER_PORT_MAPPING" >> "$CALLS"
 printf '%s' "$IMDS_RELAY_TEMPORARY_SAS_URL" > "$RELAY_VALUE"
 case "$*" in
-  *" port benchmark-server 9000") echo 0.0.0.0:49153 ;;
   "ps -aq --filter label=org.ivm-bench.run-id=$IVM_BENCH_RUN_ID") echo owned-container ;;
   "network ls -q --filter label=org.ivm-bench.run-id=$IVM_BENCH_RUN_ID") echo owned-network ;;
   "rm -f owned-container") exit 1 ;;
@@ -137,7 +135,6 @@ fi
                    "CALLS": str(tmp / "calls"), "STREAMING": str(tmp / "streaming"),
                    "RELAY_VALUE": str(tmp / "relay_value"),
                    "IMDS_RELAY_TEMPORARY_SAS_URL": "injected-sender-url",
-                   "BENCHMARK_SERVER_DYNAMIC_PORT": "1",
                    "REPO_ROOT": str(root),
                    "GITHUB_ENV": str(tmp / "github_env"), "OPENIVM_UBUNTU_MIRROR": "unused",
                    "BENCHMARK_EXPERIMENTS_FILE": str(root / "experiments.json")}
@@ -160,14 +157,122 @@ fi
                 self.assertIn(f"network ls -q --filter label=org.ivm-bench.run-id={run_id}", calls)
                 self.assertIn("rm -f owned-container", calls)
                 self.assertIn("network rm owned-network", calls)
-                self.assertIn("port-mapping=9000\n", calls)
-                self.assertIn("http://localhost:49153/health", calls)
-                self.assertIn("http://localhost:49153/benchmark/stream", calls)
+                self.assertIn("http://localhost:9000/health", calls)
+                self.assertIn("http://localhost:9000/benchmark/stream", calls)
                 self.assertNotIn("unrelated", calls)
             finally:
                 if process.poll() is None:
                     process.kill()
                     process.communicate()
+
+    def test_stale_port_cleanup_removes_only_benchmark_server_publishers(self):
+        script = BENCHMARK_SERVER.parents[2] / "tools/scripts/github/cleanup-benchmark-port.sh"
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            docker = root / "docker"
+            docker.write_text("""#!/bin/bash
+echo "$*" >> "$CALLS"
+case "$1" in
+  ps) echo "old-server other-port unrelated" ;;
+  inspect) cat "$CONTAINERS" ;;
+esac
+""")
+            docker.chmod(0o755)
+            ss = root / "ss"
+            ss.write_text("#!/bin/bash\nexit 0\n")
+            ss.chmod(0o755)
+
+            def container(name, service, host_port):
+                return {"Id": name, "Name": f"/{name}", "Config": {"Labels": {
+                    "com.docker.compose.service": service}}, "NetworkSettings": {
+                    "Ports": {"9000/tcp": [{"HostPort": host_port}]}}}
+
+            for service in ("benchmark-server", "minio"):
+                with self.subTest(service=service):
+                    (root / "containers.json").write_text(json.dumps([
+                        container("old-server", service, "9000"),
+                        container("other-port", "benchmark-server", "9001"),
+                        container("unrelated", "minio", "9002"),
+                    ]))
+                    (root / "calls").write_text("")
+                    result = subprocess.run(["bash", str(script)], capture_output=True, text=True,
+                        env={**os.environ, "PATH": f"{root}:{os.environ['PATH']}",
+                             "GITHUB_ACTIONS": "true", "CALLS": str(root / "calls"),
+                             "CONTAINERS": str(root / "containers.json")})
+                    calls = (root / "calls").read_text()
+                    if service == "benchmark-server":
+                        self.assertEqual(result.returncode, 0, result.stderr)
+                        self.assertIn("rm -f old-server\n", calls)
+                    else:
+                        self.assertNotEqual(result.returncode, 0)
+                        self.assertIn("non-benchmark container", result.stderr)
+                        self.assertNotIn("rm -f", calls)
+                    self.assertNotIn("rm -f other-port", calls)
+                    self.assertNotIn("rm -f unrelated", calls)
+
+    def test_stale_port_cleanup_stops_orphan_proxies_but_not_other_processes(self):
+        script = BENCHMARK_SERVER.parents[2] / "tools/scripts/github/cleanup-benchmark-port.sh"
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            commands = {
+                "docker": "#!/bin/bash\nexit 0\n",
+                "ss": """#!/bin/bash
+if [[ ! -f "$STOPPED" ]]; then
+  echo 'LISTEN 0 4096 *:9000 *:* users:(("listener",pid=12345,fd=4))'
+fi
+""",
+                "sudo": """#!/bin/bash
+shift
+echo "$*" >> "$CALLS"
+case "$1" in
+  ss) exec ss "${@:2}" ;;
+  readlink) echo "$LISTENER_EXE" ;;
+  kill) touch "$STOPPED" ;;
+  *) exit 1 ;;
+esac
+""",
+            }
+            for name, text in commands.items():
+                (root / name).write_text(text)
+                (root / name).chmod(0o755)
+            for executable in ("/usr/bin/docker-proxy", "/usr/bin/python3"):
+                with self.subTest(executable=executable):
+                    (root / "stopped").unlink(missing_ok=True)
+                    (root / "calls").write_text("")
+                    result = subprocess.run(["bash", str(script)], capture_output=True, text=True,
+                        env={**os.environ, "PATH": f"{root}:{os.environ['PATH']}",
+                             "GITHUB_ACTIONS": "true", "CALLS": str(root / "calls"),
+                             "STOPPED": str(root / "stopped"), "LISTENER_EXE": executable})
+                    calls = (root / "calls").read_text()
+                    if executable.endswith("/docker-proxy"):
+                        self.assertEqual(result.returncode, 0, result.stderr)
+                        self.assertIn("kill -TERM -- 12345\n", calls)
+                    else:
+                        self.assertNotEqual(result.returncode, 0)
+                        self.assertIn("leaving it running", result.stderr)
+                        self.assertNotIn("kill ", calls)
+
+    def test_stale_port_cleanup_does_not_treat_inspection_errors_as_a_free_port(self):
+        script = BENCHMARK_SERVER.parents[2] / "tools/scripts/github/cleanup-benchmark-port.sh"
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            for command in ("docker", "ss"):
+                path = root / command
+                path.write_text(f"""#!/bin/bash
+if [[ "$FAIL_COMMAND" == "{command}" ]]; then
+  echo "{command} inspection failed" >&2
+  exit 1
+fi
+""")
+                path.chmod(0o755)
+            for command in ("docker", "ss"):
+                with self.subTest(command=command):
+                    result = subprocess.run(["bash", str(script)], capture_output=True, text=True,
+                        env={**os.environ, "PATH": f"{root}:{os.environ['PATH']}",
+                             "GITHUB_ACTIONS": "true", "FAIL_COMMAND": command})
+                    self.assertNotEqual(result.returncode, 0)
+                    self.assertIn(f"{command} inspection failed", result.stderr)
+                    self.assertNotIn("TCP port 9000 is clear.", result.stdout)
 
     def test_spark_build_fetches_a_pin_outside_branch_history(self):
         with tempfile.TemporaryDirectory() as tmp:

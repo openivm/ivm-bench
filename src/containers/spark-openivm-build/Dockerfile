@@ -21,8 +21,8 @@
 #                            artifacts at /opt/spark-openivm/. entrypoint
 #                            copies them to ${OUTPUT_DIR:-/output}/.
 #
-#  The Spark and Fabric images use the same native OpenIVM revision as the
-#  DuckDB OpenIVM image.
+#  Keep the native pin matched to the qualified Spark revision; it can differ
+#  from the DuckDB OpenIVM image while a Spark change is being benchmarked.
 #  The native revision pins DuckDB, LPTS, and CI tools through its submodules.
 # =============================================================================
 
@@ -42,7 +42,7 @@ FROM duckdb-openivm-toolchain:ubuntu22.04-gcc13 AS openivm-builder
 
 WORKDIR /src
 
-ARG OPENIVM_REPO=https://github.com/mdrakiburrahman/openivm.git
+ARG OPENIVM_REPO=https://github.com/openivm/openivm.git
 ARG OPENIVM_COMMIT=fdbd6ff59248965aafbf9338907a98bf222f0437
 
 # The OpenIVM revision pins matching DuckDB 2.0 and LPTS submodules.
@@ -76,7 +76,7 @@ RUN mkdir -p /artifacts && \
 FROM eclipse-temurin:17-jdk AS spark-ext-builder
 
 ARG UBUNTU_MIRROR=http://archive.ubuntu.com/ubuntu
-ARG OPENIVM_SPARK_REPO=https://github.com/mdrakiburrahman/openivm-spark.git
+ARG OPENIVM_SPARK_REPO=https://github.com/openivm/openivm-spark.git
 ARG OPENIVM_SPARK_COMMIT=c7e21c233a79ba3b680aedb9d74504876067b59d
 ARG SBT_VERSION=1.9.7
 

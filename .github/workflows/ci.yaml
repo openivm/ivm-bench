@@ -296,10 +296,12 @@ jobs:
           chmod 600 "$GITHUB_WORKSPACE/.env"
           echo "Wrote $(wc -c < "$GITHUB_WORKSPACE/.env") bytes to .env"
 
+      - name: "Clear stale benchmark-server listeners"
+        run: bash tools/scripts/github/cleanup-benchmark-port.sh
+
       - name: "🏁 Run benchmark"
         id: benchmark
         env:
-          BENCHMARK_SERVER_DYNAMIC_PORT: "1"
           IMDS_RELAY_TEMPORARY_SAS_URL: ${{ secrets.IMDS_RELAY_TEMPORARY_SAS_URL }}
         run: bash src/.scripts/benchmark.sh
 
