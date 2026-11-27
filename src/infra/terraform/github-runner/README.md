@@ -14,6 +14,11 @@ Every `apply` reimages all VMSS instances so they re-run cloud-init and
 re-register with the freshly minted token. The instances reboot simultaneously,
 so expect a brief runner outage mid-apply.
 
+The wrapper installs a Terraform override into the pinned module after downloading
+it. This keeps the Bastion public IP's `FirstPartyUsage=/NonProd` tag and leaves
+existing subnet NSG attachment and NSG rules under Azure network management.
+Run plans through the wrapper so they use the same network configuration as apply.
+
 ## Override VMSS sizing
 
 Set in `.env`:

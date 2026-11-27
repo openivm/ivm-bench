@@ -118,6 +118,11 @@ STATE_KEY="github-runner-ivm-bench.tfstate"
 echo "=== terraform get -update (refresh pinned KangarooKube module) ==="
 terraform -chdir="$TF_DIR" get -update
 
+# Terraform loads override files in the owning (downloaded) module, not its caller.
+module_dir=$(jq -er '.Modules[] | select(.Key == "github_runner") | .Dir' \
+  "$TF_DIR/.terraform/modules/modules.json")
+install -m 0644 "$TF_DIR/module-overrides/network.tf" "$TF_DIR/$module_dir/network_override.tf"
+
 echo "=== terraform init (backend: $TF_STATE_STORAGE_ACCOUNT_NAME / $TF_STATE_STORAGE_ACCOUNT_CONTAINER / $STATE_KEY) ==="
 terraform -chdir="$TF_DIR" init -reconfigure \
   -backend-config="storage_account_name=${TF_STATE_STORAGE_ACCOUNT_NAME}" \
