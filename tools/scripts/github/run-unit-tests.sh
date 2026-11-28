@@ -9,7 +9,8 @@ if ! python3 -m venv --system-site-packages .runtime/ci-tests; then
   python3 -m venv --system-site-packages .runtime/ci-tests
 fi
 py=.runtime/ci-tests/bin/python
-"$py" -m pip install -r src/containers/benchmark-server/requirements.txt PyYAML databricks-sdk "deltalake>=0.18" pyarrow psycopg2-binary "boto3>=1.35"
+"$py" -m pip install -r src/containers/benchmark-server/requirements.txt -r src/containers/dbt-server/requirements-test.txt psycopg2-binary "boto3>=1.35"
+"$py" -c "import duckdb; duckdb.connect().execute(\"FORCE INSTALL delta FROM 'https://extensions.duckdb.org'\")"
 export PYTHONPATH="$PWD/src/containers${PYTHONPATH:+:$PYTHONPATH}"
 "$py" -m sql_catalog generate --all
 "$py" -m sql_catalog check --all
@@ -17,3 +18,4 @@ export PYTHONPATH="$PWD/src/containers${PYTHONPATH:+:$PYTHONPATH}"
 "$py" tools/scripts/check-sql-catalog.py --all
 "$py" -m unittest discover -s src/containers/dbt-server/tests -v
 "$py" -m unittest discover -s src/containers/benchmark-server/tests -v
+"$py" -m unittest discover -s src/workloads/extended-tpcds -p 'test_*.py' -v

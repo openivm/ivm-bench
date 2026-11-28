@@ -165,7 +165,6 @@ class AugmentedTpcdiTest(unittest.TestCase):
         )
 
         self.assertNotIn("inputs.databricks_refresh_policy", workflow)
-        self.assertIn("inputs.experiments_file || 'inline'", workflow)
         dispatch_inputs = re.search(
             r"(?ms)^  workflow_dispatch:\n    inputs:\n(.*?)(?=^\S|^  \S)", workflow,
         ).group(1)

@@ -100,6 +100,7 @@
       "engines": ["dbspnet"],
       "paths": [
         "docker/docker-compose.benchmark.dbspnet.yml",
+        "docker/docker-compose.extended-tpcds-dbspnet.yml",
         "src/containers/dbspnet/**",
         "src/containers/dbt-server/dbt-projects/dbspnet/**",
         "src/containers/dbt-server/handlers/dbspnet.py",
@@ -113,6 +114,7 @@
       "engines": ["risingwave"],
       "paths": [
         "docker/docker-compose.benchmark.risingwave.yml",
+        "docker/docker-compose.extended-tpcds-risingwave.yml",
         "src/containers/risingwave/**",
         "src/containers/dbt-server/dbt-projects/risingwave/**",
         "src/containers/dbt-server/dbt-projects/.rw_port.py",
@@ -195,6 +197,7 @@
     "docker/docker-compose.batch-loader.yml",
     "docker/docker-compose.benchmark-server.yml",
     "docker/docker-compose.datagen.yml",
+    "docker/docker-compose.extended-tpcds-datagen.yml",
     "docker/docker-compose.lpts-build.yml",
     "src/.scripts/**",
     "src/containers/benchmark-server/**",
@@ -206,6 +209,7 @@
     "src/containers/sql_catalog/project_targets.json",
     "src/containers/tpc-di-gen/**",
     "src/infra/**",
+    "src/workloads/extended-tpcds/**",
     "tools/**"
   ]
 }

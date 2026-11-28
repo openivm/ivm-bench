@@ -4,7 +4,30 @@ from __future__ import annotations
 
 import json
 import os
+from pathlib import Path
 from typing import Any, Dict, Optional
+
+
+def collect_extended_source_row_counts(directory: str) -> Dict[str, Any]:
+    """Use the immutable Parquet plan; this workload has no Delta batch folders."""
+    root = Path(directory)
+    manifest = json.loads((root / 'plan' / 'manifest.json').read_text())
+    preparation = json.loads((root / 'preparation.json').read_text())
+    initial = {name: image['rows'] for name, image in manifest['initial'].items()}
+    batches = {'1': {'tables': initial, 'total_rows': sum(initial.values()), 'resulting_tables': initial}}
+    for batch in manifest['batches']:
+        operation_rows = {'insert': {}, 'update': {}, 'delete': {}}
+        for operation in batch['operations']:
+            kind, name = operation['kind'], operation['table']
+            tables = operation_rows[kind]
+            image = operation['before'] if kind == 'delete' else operation['after']
+            tables[name] = tables.get(name, 0) + image['rows']
+        inserted = operation_rows['insert']
+        batches[str(batch['number'])] = {'tables': inserted, 'total_rows': sum(inserted.values()),
+                                         'resulting_tables': batch['source_rows'],
+                                         'operation_rows': operation_rows,
+                                         'percentages': batch['percentages']}
+    return {'batches': batches, 'preparation': preparation, 'plan_id': manifest['plan_id']}
 
 
 def _active_table_rows(table_dir: str) -> int:
