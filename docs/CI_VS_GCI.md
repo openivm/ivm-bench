@@ -11,6 +11,13 @@
 | [`gci.yaml`](../.github/workflows/gci.yaml) | Non-draft same-repo PR, every push to `main`, or manual dispatch on the default branch | SF10 TPC-DI ([`gci-sf10-local-engines.json`](../src/containers/benchmark-server/experiments/gci-sf10-local-engines.json)) on the local engines a PR affects; every local engine on `main` | `gci-full` PR label |
 | [`ci.yaml`](../.github/workflows/ci.yaml) | Ad hoc only | Every engine ([`ci-sf10-all-engines.json`](../src/containers/benchmark-server/experiments/ci-sf10-all-engines.json)), or any experiments file | All dispatch inputs |
 
+The benchmark server uses fixed host port 9000. Before a CI benchmark starts,
+[`cleanup-benchmark-port.sh`](../tools/scripts/github/cleanup-benchmark-port.sh)
+removes stale Compose `benchmark-server` containers publishing that port and
+stops orphan Docker proxy listeners. These runners execute one job at a time.
+An unrelated container or host process on port 9000 fails the job without being
+terminated. Local benchmark runs never perform this cleanup.
+
 ### Affected engines
 
 Like `nx affected`, GCI benchmarks only the local engines a PR can change.
