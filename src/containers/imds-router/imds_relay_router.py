@@ -232,10 +232,8 @@ class Handler(BaseHTTPRequestHandler):
         parsed = urllib.parse.urlparse(self.path)
 
         if parsed.path == "/healthz":
-            missing = [key for key, value in (("IMDS_RELAY_URL", RELAY_URL),
-                                             ("IMDS_RELAY_SENDER_KEY", RELAY_SENDER_KEY)) if not value]
-            if missing:
-                return self._json(503, {"Healthy": False, "error": "Missing relay configuration: " + ", ".join(missing)})
+            if not RELAY_TEMPORARY_SAS_URL:
+                return self._json(503, {"Healthy": False, "error": "IMDS_RELAY_TEMPORARY_SAS_URL not set"})
             return self._json(200, {"Healthy": True})
         if parsed.path in ("/metadata/identity/oauth2/token", "/token"):
             return self._handle_token(parsed)
@@ -311,6 +309,6 @@ if __name__ == "__main__":
         f"(threaded; refresh lead {TOKEN_REFRESH_LEAD_SEC}s)",
         flush=True,
     )
-    if not RELAY_URL or not RELAY_SENDER_KEY:
-        print("[imds-router] Missing IMDS_RELAY_URL or IMDS_RELAY_SENDER_KEY; restore Fabric credentials in BASE64_ENV", flush=True)
+    if not RELAY_TEMPORARY_SAS_URL:
+        print("[imds-router] IMDS_RELAY_TEMPORARY_SAS_URL not set", flush=True)
     server.serve_forever()

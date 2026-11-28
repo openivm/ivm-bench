@@ -21,16 +21,14 @@ spec.loader.exec_module(router)
 
 class RelayTokenTests(unittest.TestCase):
     def test_health_requires_relay_configuration_without_exposing_secrets(self):
-        for url, key, status in [('', '', 503), ('https://relay.invalid', '', 503),
-                                 ('', 'secret', 503), ('https://relay.invalid', 'secret', 200)]:
-            with self.subTest(configured=status==200), patch.object(router,'RELAY_URL',url), \
-                 patch.object(router,'RELAY_SENDER_KEY',key):
-                handler=Mock(path='/healthz')
+        for url, status in [("", 503), ("https://relay.invalid?sb-hc-token=secret", 200)]:
+            with self.subTest(configured=bool(url)), patch.object(router, "RELAY_TEMPORARY_SAS_URL", url):
+                handler = Mock(path="/healthz")
                 router.Handler.do_GET(handler)
-                actual,body=handler._json.call_args.args
-                self.assertEqual(actual,status)
-                self.assertEqual(body['Healthy'],status==200)
-                self.assertNotIn('secret',json.dumps(body))
+                actual, body = handler._json.call_args.args
+                self.assertEqual(actual, status)
+                self.assertEqual(body["Healthy"], bool(url))
+                self.assertNotIn("secret", json.dumps(body))
 
     def setUp(self):
         self.cache = patch.object(router, "_CACHE", router.TokenCache(300))
