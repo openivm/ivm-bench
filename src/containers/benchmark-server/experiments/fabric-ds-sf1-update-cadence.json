@@ -3,6 +3,9 @@
     "workload": "extended-tpcds",
     "scale_factor": 1,
     "engines": [
+      "duckdb",
+      "duckdb-openivm",
+      "spark",
       "spark-openivm",
       "databricks-enzyme",
       "databricks-openivm",

@@ -12,7 +12,8 @@
       "fabric-jvm-35",
       "fabric-openivm-jvm-35",
       "feldera",
-      "dbspnet"
+      "dbspnet",
+      "materialize-emulator"
     ],
     "schedule": "serial",
     "parallel": false,
@@ -47,7 +48,7 @@
   },
   "experiments": [
     {
-      "label": "Fabric-DS SF100, calibrated 100 GB source target, insertion 100/1/0.01, all ten engines serially, validation ON"
+      "label": "Fabric-DS SF100, calibrated 100 GB source target, insertion 100/1/0.01, serial engines, validation ON"
     }
   ]
 }
