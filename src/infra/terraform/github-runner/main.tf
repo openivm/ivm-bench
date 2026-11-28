@@ -7,6 +7,7 @@ module "github_runner" {
   github_repo              = var.github_repo
   github_runner_token      = var.github_runner_token
   ssh_public_key           = var.ssh_public_key
+  runner_version           = var.runner_version
   runner_labels            = ["ivm-bench-azure"]
   instance_sku             = var.instance_sku
   instance_count           = var.instance_count
