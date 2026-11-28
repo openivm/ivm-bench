@@ -60,7 +60,7 @@ set -euo pipefail
 cd "$(git rev-parse --show-toplevel)"
 REPO_ROOT="$(pwd)"
 
-if [[ -v IMDS_RELAY_TEMPORARY_SAS_URL ]]; then
+if [[ ${IMDS_RELAY_TEMPORARY_SAS_URL+x} ]]; then
   relay_sas_url="$IMDS_RELAY_TEMPORARY_SAS_URL"
 fi
 if [[ -f "$REPO_ROOT/.env" ]]; then
@@ -68,7 +68,7 @@ if [[ -f "$REPO_ROOT/.env" ]]; then
   source "$REPO_ROOT/.env"
   set +o allexport
 fi
-if [[ -v relay_sas_url ]]; then
+if [[ ${relay_sas_url+x} ]]; then
   export IMDS_RELAY_TEMPORARY_SAS_URL="$relay_sas_url"
   unset relay_sas_url
 fi
