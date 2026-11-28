@@ -918,7 +918,7 @@ class EngineRunner:
             if name in ("databricks-enzyme", "databricks-openivm"):
                 self._databricks_enzyme_warmup(batch_num)
 
-            if not is_cloud_engine(name) and name != "feldera":
+            if not is_cloud_engine(name) and name not in ("feldera", "dbspnet"):
                 self._start_cpu_measurement(batch_num)
             t0 = time.time()
             t0_ms = int(t0 * 1000)
@@ -972,7 +972,7 @@ class EngineRunner:
             batch.extra["duration_s_wallclock"] = wall_s
             batch.extra["wall_window_start_ms"] = t0_ms
             batch.extra["wall_window_end_ms"] = t1_ms
-            if not is_cloud_engine(name) and name != "feldera":
+            if not is_cloud_engine(name) and name not in ("feldera", "dbspnet"):
                 self._finish_cpu_measurement(batch_num)
 
             if name == "materialize-emulator" and run_id:
@@ -1270,6 +1270,7 @@ class EngineRunner:
         compile_time_s = deploy_resp.json().get("compileTimeS")
         self._emit(f"[dbspnet] Deployed — compile {compile_time_s}s (not measured)")
 
+        self._start_cpu_measurement(1)
         resume_resp = requests.post(f"{self._dbt_url}/resume/dbspnet", timeout=60)
         resume_resp.raise_for_status()
         start_epoch = resume_resp.json().get("resumed_at_epoch_s", time.time())
@@ -1286,9 +1287,11 @@ class EngineRunner:
             timeout=604800,
         )
         wait_data = wait_resp.json()
+        self._finish_cpu_measurement(1)
         if wait_resp.status_code != 200:
             raise RuntimeError(f"DbspNet batch 1 wait failed: {wait_data.get('error', 'unknown')}")
 
+        self._record_dbspnet_duration(wait_data)
         self._emit(f"[dbspnet] Batch 1 processing time: {wait_data.get('duration_s', '?')}s")
         if compile_time_s:
             self._result.extra["compile_time_s"] = compile_time_s
@@ -1299,6 +1302,7 @@ class EngineRunner:
         """DbspNet batches 2/3: the batch-loader has already appended new source versions
         (generic append in _run_batch, before the timer). Resume drains only those new
         versions; wait blocks until done."""
+        self._start_cpu_measurement(batch_num)
         resume_resp = requests.post(f"{self._dbt_url}/resume/dbspnet", timeout=60)
         resume_resp.raise_for_status()
         start_epoch = resume_resp.json().get("resumed_at_epoch_s", time.time())
@@ -1314,11 +1318,24 @@ class EngineRunner:
             timeout=604800,
         )
         wait_data = wait_resp.json()
+        self._finish_cpu_measurement(batch_num)
         if wait_resp.status_code != 200:
             raise RuntimeError(f"DbspNet batch {batch_num} wait failed: {wait_data.get('error', 'unknown')}")
 
+        self._record_dbspnet_duration(wait_data)
         self._emit(f"[dbspnet] Batch {batch_num} processing time: {wait_data.get('duration_s', '?')}s")
         self._save_dbspnet_result(batch_num, wait_data)
+
+    def _record_dbspnet_duration(self, wait_data: dict) -> None:
+        """Use the engine's own resume→drained time as the batch duration, as Feldera's is.
+
+        Without it the batch falls back to wall-clock from before deploy, which folds the
+        program translation, compile and connector wiring (and the HTTP round trips) into
+        batch 1, though deploy is meant to be excluded like Feldera's compile.
+        """
+        duration = wait_data.get("duration_s")
+        if isinstance(duration, (int, float)) and not isinstance(duration, bool):
+            self._measured_duration_s = float(duration)
 
     def _save_dbspnet_result(self, batch_num: int, wait_data: dict) -> None:
         results_dir = os.path.join(

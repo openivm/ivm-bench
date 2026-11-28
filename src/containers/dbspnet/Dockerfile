@@ -8,7 +8,7 @@ FROM mcr.microsoft.com/dotnet/sdk:10.0 AS build
 # empty, so fall back to the build stage's own architecture.
 ARG TARGETARCH
 ARG DBSPNET_REPO=https://github.com/clast-project/dbsp-net.git
-ARG DBSPNET_COMMIT=76dbce8
+ARG DBSPNET_COMMIT=da8f827
 
 # git + certs for the clone.
 RUN apt-get update \
@@ -43,5 +43,9 @@ ENV ASPNETCORE_URLS=http://+:8080
 # Tiering counts calls from the first one, not after a 100 ms quiet period: batch-1 drain -25%
 # at SF=3, W=12, Nexmark neutral (dbsp-net issue #8).
 ENV DOTNET_TC_CallCountingDelayMs=0
+# DATAS (the GC's dynamic heap-count adaptation) off: on Linux it doubles batch 1's gen2
+# collections; off, batch-1 processing 13.67 -> 11.89 s at SF=3 in this harness, allocation and
+# outputs unchanged (dbsp-net docs/design-tpcdi-batch1.md). Override with -e DOTNET_GCDynamicAdaptationMode=1.
+ENV DOTNET_GCDynamicAdaptationMode=0
 EXPOSE 8080
 ENTRYPOINT ["dotnet", "DbspNet.Server.dll"]
