@@ -43,7 +43,7 @@ FROM duckdb-openivm-toolchain:ubuntu22.04-gcc13 AS openivm-builder
 WORKDIR /src
 
 ARG OPENIVM_REPO=https://github.com/ila/openivm.git
-ARG OPENIVM_COMMIT=1a6310bc1c98bd7251e8177031683249fe20e9c0
+ARG OPENIVM_COMMIT=7219a42e684cd2aa85a27eb1850479d0df8224f4
 
 # The OpenIVM revision pins matching DuckDB 2.0 and LPTS submodules.
 RUN git init -q && \
