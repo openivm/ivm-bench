@@ -8,11 +8,19 @@ src/.scripts/deploy-gh-runner.sh destroy
 src/.scripts/deploy-gh-runner.sh plan
 ```
 
-Requires `gh auth status` logged in (fresh runner token is minted per apply).
+Plan and apply use the authenticated `gh` CLI to resolve the current Linux x64 runner
+release for the target repository. That version is embedded in cloud-init for new
+and reimaged instances; apply also mints a fresh registration token.
+Use the canonical `GH_REPO=https://github.com/openivm/ivm-bench` in `.env`. The GitHub API redirects the old repository name, but runner registration does not.
 
 Every `apply` reimages all VMSS instances so they re-run cloud-init and
 re-register with the freshly minted token. The instances reboot simultaneously,
 so expect a brief runner outage mid-apply.
+
+The wrapper installs a Terraform override into the pinned module after downloading
+it. This keeps the Bastion public IP's `FirstPartyUsage=/NonProd` tag and leaves
+existing subnet NSG attachment and NSG rules under Azure network management.
+Run plans through the wrapper so they use the same network configuration as apply.
 
 ## Override VMSS sizing
 

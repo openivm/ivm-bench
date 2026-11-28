@@ -88,14 +88,6 @@ on:
         description: "% of existing staging rows to delete before batch 3 insert"
         default: "0"
         type: string
-      runner:
-        description: "Benchmark machine (any uses the first available runner)"
-        default: any
-        type: choice
-        options:
-          - any
-          - ivm-bench-vmss-runner000000
-          - ivm-bench-vmss-runner000001
       schedule:
         description: "Scheduling mode: serial | parallel | serial-host-parallel-cloud"
         default: "serial-host-parallel-cloud"
@@ -138,7 +130,7 @@ on:
         type: string
 
 concurrency:
-  group: ci-${{ github.event_name == 'push' && format('push-{0}', github.run_id) || github.ref }}-${{ inputs.experiments_file || 'inline' }}-${{ inputs.experiments_engines || 'default' }}-${{ inputs.scale_factor }}-${{ inputs.engines }}-${{ inputs.runner || 'any' }}
+  group: ci-${{ github.event_name == 'push' && format('push-{0}', github.run_id) || github.ref }}-${{ inputs.experiments_file || 'inline' }}-${{ inputs.experiments_engines || 'default' }}-${{ inputs.scale_factor }}-${{ inputs.engines }}
   cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
 permissions:
@@ -148,7 +140,7 @@ permissions:
 
 jobs:
   benchmark:
-    runs-on: [self-hosted, Linux, X64, "${{ inputs.runner != 'any' && inputs.runner || 'ivm-bench-azure' }}"]
+    runs-on: [self-hosted, Linux, X64, ivm-bench-azure]
     environment: ${{ github.event_name == 'workflow_dispatch' && 'manual-run' || '' }}
     timeout-minutes: ${{ fromJSON(inputs.timeout_minutes || '500') }}
 
