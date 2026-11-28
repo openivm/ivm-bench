@@ -9,6 +9,7 @@ src/.scripts/deploy-gh-runner.sh plan
 ```
 
 Requires `gh auth status` logged in (fresh runner token is minted per apply).
+Use the canonical `GH_REPO=https://github.com/openivm/ivm-bench` in `.env`. The GitHub API redirects the old repository name, but runner registration does not.
 
 Every `apply` reimages all VMSS instances so they re-run cloud-init and
 re-register with the freshly minted token. The instances reboot simultaneously,
