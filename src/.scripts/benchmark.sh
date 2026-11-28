@@ -190,10 +190,13 @@ trap 'exit 143' TERM
 
 echo "=== Starting benchmark-server ==="
 docker compose -f "$COMPOSE_FILE" -p "$SERVER_PROJECT" up -d --build
+SERVER_ADDRESS="$(docker compose -f "$COMPOSE_FILE" -p "$SERVER_PROJECT" port benchmark-server 9000)"
+SERVER_URL="http://$SERVER_ADDRESS"
+echo "Benchmark server URL: $SERVER_URL"
 
 HEALTH_OK=0
 for i in $(seq 1 $HEALTH_RETRIES); do
-  if curl -sf http://localhost:9000/health >/dev/null 2>&1; then
+  if curl -sf "$SERVER_URL/health" >/dev/null 2>&1; then
     HEALTH_OK=1
     break
   fi
@@ -208,7 +211,7 @@ if [[ "$HEALTH_OK" != "1" ]]; then
 fi
 
 # Start explicitly so configuration errors reach CI before opening the SSE stream.
-if ! curl -sS --fail-with-body --request POST "http://localhost:9000/benchmark"; then
+if ! curl -sS --fail-with-body --request POST "$SERVER_URL/benchmark"; then
   echo "=== FAILURE — benchmark-server rejected the experiment ==="
   docker compose -f "$COMPOSE_FILE" -p "$SERVER_PROJECT" logs benchmark-server
   exit 1
@@ -232,7 +235,7 @@ while IFS= read -r line; do
       fi
       ;;
   esac
-done < <(curl -sfN "http://localhost:9000/benchmark/stream" 2>/dev/null)
+done < <(curl -sfN "$SERVER_URL/benchmark/stream" 2>/dev/null)
 
 echo ""
 echo "=== OAT sweep finished — status: ${FINAL_STATUS} ==="

@@ -8,7 +8,8 @@ services:
       context: ../src/containers
       dockerfile: benchmark-server/Dockerfile
     ports:
-      - "9000:9000"
+      - target: 9000
+        host_ip: 127.0.0.1
     extra_hosts:
       - "host.docker.internal:host-gateway"
     volumes:
