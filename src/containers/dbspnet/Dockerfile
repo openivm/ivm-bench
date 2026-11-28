@@ -8,7 +8,7 @@ FROM mcr.microsoft.com/dotnet/sdk:10.0 AS build
 # empty, so fall back to the build stage's own architecture.
 ARG TARGETARCH
 ARG DBSPNET_REPO=https://github.com/clast-project/dbsp-net.git
-ARG DBSPNET_COMMIT=86d0ce1
+ARG DBSPNET_COMMIT=76dbce8
 
 # git + certs for the clone.
 RUN apt-get update \
