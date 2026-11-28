@@ -42,3 +42,8 @@ variable "instance_count" {
   description = "Number of VMSS instances. The VMSS is not autoscaled, so this is both the current and the max node count."
   default     = 3
 }
+
+variable "runner_version" {
+  type        = string
+  description = "Linux x64 runner version advertised by the repository at reconcile time."
+}

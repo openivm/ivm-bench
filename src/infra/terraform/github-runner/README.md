@@ -8,7 +8,9 @@ src/.scripts/deploy-gh-runner.sh destroy
 src/.scripts/deploy-gh-runner.sh plan
 ```
 
-Requires `gh auth status` logged in (fresh runner token is minted per apply).
+Plan and apply use the authenticated `gh` CLI to resolve the current Linux x64 runner
+release for the target repository. That version is embedded in cloud-init for new
+and reimaged instances; apply also mints a fresh registration token.
 Use the canonical `GH_REPO=https://github.com/openivm/ivm-bench` in `.env`. The GitHub API redirects the old repository name, but runner registration does not.
 
 Every `apply` reimages all VMSS instances so they re-run cloud-init and

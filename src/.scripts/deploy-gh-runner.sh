@@ -66,9 +66,9 @@ if ! command -v az >/dev/null 2>&1; then
   exit 1
 fi
 
-# `gh` is required only for `apply` (to mint a fresh runner registration token).
+# Plan and apply resolve the repository-specific runner release; apply also mints a token.
 # Fail fast before any cloud calls so we don't waste init/plan time.
-if [[ "$ACTION" == "apply" ]]; then
+if [[ "$ACTION" == "apply" || "$ACTION" == "plan" ]]; then
   if ! command -v gh >/dev/null 2>&1; then
     echo "ERROR: gh CLI not found." >&2
     echo "Install it: https://github.com/cli/cli/blob/trunk/docs/install_linux.md" >&2
@@ -90,13 +90,21 @@ az account set --subscription "$TF_SUBSCRIPTION_ID" >/dev/null
 echo "Active subscription: $(az account show --query name -o tsv) ($TF_SUBSCRIPTION_ID)"
 
 # --- gh CLI: mint a fresh registration token for `apply` ---------------------
-mint_runner_token() {
-  local repo_path="${GH_REPO#http://}"
-  repo_path="${repo_path#https://}"
-  repo_path="${repo_path#github.com/}"
-  repo_path="${repo_path%/}"
-  repo_path="${repo_path%.git}"
+repo_path="${GH_REPO#https://github.com/}"
+repo_path="${repo_path%/}"
+repo_path="${repo_path%.git}"
+runner_version=unused
+if [[ "$ACTION" == "apply" || "$ACTION" == "plan" ]]; then
+  runner_version=$(gh api "repos/$repo_path/actions/runners/downloads" | jq -er '
+    [.[] | select(.os == "linux" and .architecture == "x64")] | if length != 1 then
+      error("expected one Linux x64 runner download")
+    else .[0] end | . as $asset |
+    (.filename | capture("^actions-runner-linux-x64-(?<v>[0-9]+[.][0-9]+[.][0-9]+)[.]tar[.]gz$").v) |
+    select($asset.download_url == ("https://github.com/actions/runner/releases/download/v" + . + "/" + $asset.filename))') || { echo "ERROR: cannot resolve the repository Linux x64 runner release" >&2; exit 1; }
+  echo "Using repository-advertised Linux x64 GitHub Actions runner v$runner_version"
+fi
 
+mint_runner_token() {
   echo "Minting fresh runner registration token via gh api for ${repo_path}..." >&2
   gh api -X POST "/repos/${repo_path}/actions/runners/registration-token" --jq .token
 }
@@ -141,6 +149,7 @@ TF_VARS=(
   -var "subscription_id=${TF_SUBSCRIPTION_ID}"
   -var "resource_group_name=${TF_RESOURCE_GROUP}"
   -var "github_repo=${GH_REPO}"
+  -var "runner_version=${runner_version}"
   -var "github_runner_token=${RUNNER_TOKEN}"
   -var "ssh_public_key=${SSH_PUBLIC_KEY}"
 )
